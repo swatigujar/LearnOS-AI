@@ -1,3 +1,4 @@
+import json
 import unittest
 from datetime import datetime, timezone
 from unittest.mock import Mock, patch
@@ -43,16 +44,79 @@ class TutorSequencingTests(unittest.TestCase):
 
     def test_reply_is_validated_and_context_is_retrieved(self):
         syllabus = make_syllabus()
+        course = {
+            "course_name": "Applied Python",
+            "learning_goal": "Build useful automation scripts",
+            "skill_level": "intermediate",
+            "learning_style": "hands-on",
+            "additional_requirements": "Use free tools and show practical examples.",
+        }
+        for action, message in (("start", ""), ("message", "How does this topic apply?")):
+            with self.subTest(action=action):
+                provider = Mock()
+                provider.generate_structured.return_value = ProviderResult(text=make_reply().model_dump_json(), sources=[])
+                conversation = {"concepts": [], "concept_index": 0, "messages": []}
+                with patch("app.services.tutor.get_ai_provider", return_value=provider):
+                    reply = teach(syllabus, syllabus.modules[0], syllabus.modules[0].topics[0],
+                                  course, "Swati", conversation, action, message)
+
+                self.assertEqual(reply.concept_title, "Values")
+                provider.generate_structured.assert_called_once()
+                prompt = provider.generate_structured.call_args.args[0]
+                context = json.loads(prompt.split("Context:\n", 1)[1])
+                self.assertEqual(context["learner_name"], "Swati")
+                self.assertEqual(context["course_name"], "Applied Python")
+                self.assertEqual(context["goal"], "Build useful automation scripts")
+                self.assertEqual(context["level"], "intermediate")
+                self.assertEqual(context["preferences"], "hands-on")
+                self.assertEqual(context["objective"], syllabus.objective)
+                self.assertEqual(context["additional_requirements"], "Use free tools and show practical examples.")
+                self.assertEqual(context["module"]["title"], syllabus.modules[0].title)
+                self.assertEqual(context["topic"]["topic_id"], syllabus.modules[0].topics[0].topic_id)
+                self.assertEqual(context["topic"]["title"], syllabus.modules[0].topics[0].title)
+                self.assertEqual(context["resources"][0]["url"], "https://docs.python.org/3/tutorial/")
+                self.assertEqual(context["action"], action)
+                self.assertEqual(context["learner_message"], message)
+                self.assertEqual(provider.generate_structured.call_args.kwargs["feature"], "tutor")
+                self.assertIn("adapt depth and examples to the learner's skill level and learning preferences", prompt)
+                self.assertIn("Answer the learner's actual question while staying on the selected topic", prompt)
+
+    def test_missing_optional_course_context_is_safe_and_provider_is_called_once(self):
+        syllabus = make_syllabus()
         provider = Mock()
         provider.generate_structured.return_value = ProviderResult(text=make_reply().model_dump_json(), sources=[])
         conversation = {"concepts": [], "concept_index": 0, "messages": []}
+
         with patch("app.services.tutor.get_ai_provider", return_value=provider):
-            reply = teach(syllabus, syllabus.modules[0], syllabus.modules[0].topics[0],
-                          {"learning_goal": "Learn Python"}, "Swati", conversation, "start", "")
-        self.assertEqual(reply.concept_title, "Values")
+            teach(syllabus, syllabus.modules[0], syllabus.modules[0].topics[0],
+                  {}, "Learner", conversation, "start", "")
+
         provider.generate_structured.assert_called_once()
-        self.assertIn("Swati", provider.generate_structured.call_args.args[0])
-        self.assertIn("https://docs.python.org/3/tutorial/", provider.generate_structured.call_args.args[0])
+        prompt = provider.generate_structured.call_args.args[0]
+        context = json.loads(prompt.split("Context:\n", 1)[1])
+        self.assertIsNone(context["course_name"])
+        self.assertIsNone(context["goal"])
+        self.assertIsNone(context["level"])
+        self.assertIsNone(context["preferences"])
+        self.assertIsNone(context["additional_requirements"])
+
+    def test_prompt_limits_history_to_six_recent_messages_and_compacts_resources(self):
+        syllabus = make_syllabus()
+        provider = Mock()
+        provider.generate_structured.return_value = ProviderResult(text=make_reply().model_dump_json(), sources=[])
+        conversation = {
+            "concepts": [], "concept_index": 0,
+            "messages": [{"role": "user", "text": f"message-{index}", "reply": None} for index in range(10)],
+        }
+        with patch("app.services.tutor.get_ai_provider", return_value=provider):
+            teach(syllabus, syllabus.modules[0], syllabus.modules[0].topics[0], {}, "Learner",
+                  conversation, "start", "")
+        prompt = provider.generate_structured.call_args.args[0]
+        context = json.loads(prompt.split("Context:\n", 1)[1])
+        self.assertEqual([item["text"] for item in context["conversation"]], [f"message-{i}" for i in range(4, 10)])
+        self.assertEqual(context["resources"], [{
+            "title": "Python Tutorial", "url": "https://docs.python.org/3/tutorial/",
+        }])
 
     def test_confirmation_payload_requires_concept_and_rejects_user_id(self):
         payload = {"courseId": "course-123", "topicId": "module-1-topic-1", "operationId": "a" * 32,
@@ -126,9 +190,38 @@ class TutorEndpointTests(unittest.TestCase):
         self.assertEqual(self.client.post("/api/tutor/action", json=payload).status_code, 200)
         self.assertEqual(self.client.post("/api/tutor/action", json=payload).status_code, 200)
         self.model.assert_called_once()
+        self.assertEqual(self.model.call_args.kwargs["request_id"], payload["operationId"])
         self.assertTrue(self.action("pause").json()["paused"])
         self.assertEqual(self.action("message", message="help").status_code, 409)
         self.assertFalse(self.action("resume").json()["paused"])
+        self.assertEqual(self.model.call_count, 1)
+
+    def test_resume_returns_active_state_and_continue_explain_send_each_call_once(self):
+        paused = self.action("pause")
+        self.assertEqual(paused.status_code, 200)
+        self.assertTrue(paused.json()["paused"])
+        self.model.assert_not_called()
+
+        resumed = self.action("resume")
+        self.assertEqual(resumed.status_code, 200)
+        self.assertFalse(resumed.json()["paused"])
+        self.model.assert_not_called()
+
+        continued = self.action("start")
+        self.assertEqual(continued.status_code, 200)
+        self.assertFalse(continued.json()["paused"])
+        self.assertEqual(self.model.call_count, 1)
+
+        explained = self.action("explain")
+        self.assertEqual(explained.status_code, 200)
+        self.assertEqual(self.model.call_count, 2)
+
+        answered = self.action("message", message="How do values work?")
+        self.assertEqual(answered.status_code, 200)
+        self.assertEqual(self.model.call_count, 3)
+        saved_messages = answered.json()["conversation"]["messages"]
+        self.assertTrue(any(message["role"] == "user" and message["text"] == "How do values work?" for message in saved_messages))
+        self.assertEqual(sum(message["role"] == "assistant" for message in saved_messages), 3)
 
     def test_provider_failures_preserve_completion_and_are_not_retried(self):
         for code in (400, 429, 503, 504):
@@ -203,7 +296,7 @@ class TutorEndpointTests(unittest.TestCase):
         self.model.assert_called_once()
 
     def test_reply_schema_error_names_field_without_exposing_content(self):
-        def invalid_reply(*args):
+        def invalid_reply(*args, **kwargs):
             TutorReply.model_validate({**make_reply().model_dump(), "example": {"secret": "PRIVATE_CONTENT"}})
         self.model.side_effect = invalid_reply
         response = self.action("message", message="Help")

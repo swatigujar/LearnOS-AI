@@ -1,15 +1,9 @@
 import argparse
-import os
 import sys
-from pathlib import Path
+from uuid import uuid4
 
-from dotenv import load_dotenv
-from google import genai
-from google.genai import types
-
-
-BACKEND_DIR = Path(__file__).resolve().parent
-load_dotenv(BACKEND_DIR / ".env")
+from app.core.config import GEMINI_API_KEY
+from app.services.ai_provider import GeminiProvider
 
 
 def parse_args() -> argparse.Namespace:
@@ -40,76 +34,52 @@ def usage_value(metadata, field: str):
     return value if value is not None else "unavailable"
 
 
-def run_quick_check(client, model: str) -> bool:
+def run_quick_check(provider: GeminiProvider) -> bool:
     print("===== QUICK CONNECTIVITY CHECK =====", flush=True)
     try:
-        response = client.models.generate_content(
-            model=model,
-            contents="Reply with exactly: OK.",
-        )
+        result = provider.test_connection()
     except Exception as error:
-        status_code = getattr(error, "code", None)
-        if not isinstance(status_code, int):
-            status_code = getattr(error, "status_code", None)
-        message = getattr(error, "message", None) or str(error)
-        api_key = os.getenv("GEMINI_API_KEY", "")
-        if api_key:
-            message = message.replace(api_key, "[redacted]")
+        status_code = getattr(error, "status_code", None)
         print(f"STATUS: FAILED\nHTTP STATUS: {status_code or 'unavailable'}")
-        print(f"MODEL: {model}\nRETRY ATTEMPTS: 1 (one request, zero retries)")
-        print(f"ERROR: {message}")
+        print(f"MODEL: {provider.model}\nRETRY ATTEMPTS: 1 (one request, zero retries)")
+        print("ERROR: Gemini connectivity check failed.")
         return False
 
-    metadata = getattr(response, "usage_metadata", None)
     print("STATUS: SUCCESS\nHTTP STATUS: 200")
-    print(f"MODEL: {model}\nRETRY ATTEMPTS: 1 (one request, zero retries)")
-    print(f"INPUT TOKENS: {usage_value(metadata, 'prompt_token_count')}")
-    print(f"OUTPUT TOKENS: {usage_value(metadata, 'candidates_token_count')}")
-    print(f"TOTAL TOKENS: {usage_value(metadata, 'total_token_count')}")
-    print(f"RESPONSE: {response.text or 'unavailable'}")
+    print(f"MODEL: {provider.model}\nRETRY ATTEMPTS: 1 (one request, zero retries)")
+    print(f"INPUT TOKENS: {result.usage.get('total_input_tokens') if result.usage else 'unavailable'}")
+    print(f"OUTPUT TOKENS: {result.usage.get('total_output_tokens') if result.usage else 'unavailable'}")
+    print(f"THINKING TOKENS: {result.usage.get('total_thought_tokens') if result.usage else 'unavailable'}")
     return True
 
 
-def run_stage(client, model: str, name: str, system_instruction: str, prompt: str):
+def run_stage(provider: GeminiProvider, name: str, system_instruction: str, prompt: str):
     print(f"\n===== {name} =====", flush=True)
     try:
-        response = client.models.generate_content(
-            model=model,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=system_instruction,
-                response_mime_type="application/json",
-            ),
+        result = provider.generate_structured(
+            f"{system_instruction}\n{prompt}",
+            {"type": "object"},
+            feature="developer_probe",
+            request_id=f"{uuid4().hex}:{name.lower().replace(' ', '_')}",
         )
     except Exception as error:
-        status_code = getattr(error, "code", None)
-        if not isinstance(status_code, int):
-            status_code = getattr(error, "status_code", None)
-        message = getattr(error, "message", None) or str(error)
-        api_key = os.getenv("GEMINI_API_KEY", "")
-        if api_key:
-            message = message.replace(api_key, "[redacted]")
+        status_code = getattr(error, "status_code", None)
         print(f"STATUS: FAILED\nHTTP STATUS: {status_code or 'unavailable'}")
-        print(f"MODEL: {model}\nRETRY ATTEMPTS: 1 (one request, zero retries)")
-        print(f"ERROR: {message}")
+        print(f"MODEL: {provider.model}\nRETRY ATTEMPTS: 1 (one request, zero retries)")
+        print("ERROR: Gemini pipeline stage failed.")
         return None
 
-    metadata = getattr(response, "usage_metadata", None)
     print("STATUS: SUCCESS\nHTTP STATUS: 200")
-    print(f"MODEL: {model}\nRETRY ATTEMPTS: 1 (one request, zero retries)")
-    print(f"INPUT TOKENS: {usage_value(metadata, 'prompt_token_count')}")
-    print(f"OUTPUT TOKENS: {usage_value(metadata, 'candidates_token_count')}")
-    print(f"TOTAL TOKENS: {usage_value(metadata, 'total_token_count')}")
-    print("RESPONSE:")
-    print(response.text or "unavailable")
-    return response.text
+    print(f"MODEL: {provider.model}\nRETRY ATTEMPTS: 1 (one request, zero retries)")
+    print(f"INPUT TOKENS: {result.usage.get('total_input_tokens') if result.usage else 'unavailable'}")
+    print(f"OUTPUT TOKENS: {result.usage.get('total_output_tokens') if result.usage else 'unavailable'}")
+    print(f"THINKING TOKENS: {result.usage.get('total_thought_tokens') if result.usage else 'unavailable'}")
+    return result.text
 
 
 def main() -> int:
     args = parse_args()
-    api_key = os.getenv("GEMINI_API_KEY")
-    model = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
-    if not api_key:
+    if not GEMINI_API_KEY:
         print("STATUS: FAILED\nERROR: GEMINI_API_KEY is not configured in backend/.env")
         return 2
 
@@ -122,20 +92,13 @@ def main() -> int:
         "learning_style": args.learning_style,
         "additional_requirements": args.requirements,
     }
-    client = genai.Client(
-        api_key=api_key,
-        http_options=types.HttpOptions(
-            timeout=50_000,
-            retry_options=types.HttpRetryOptions(attempts=0),
-        ),
-    )
+    provider = GeminiProvider()
 
     if args.quick_check:
-        return 0 if run_quick_check(client, model) else 1
+        return 0 if run_quick_check(provider) else 1
 
     research = run_stage(
-        client,
-        model,
+        provider,
         "DIRECT RESEARCH (no Google Search)",
         "Analyze the learner's supplied goal using your model knowledge. Do not browse or use tools. "
         "Return JSON with important_topics, key_concepts, prerequisites, recommended_learning_order, "
@@ -147,8 +110,7 @@ def main() -> int:
         return 1
 
     summary = run_stage(
-        client,
-        model,
+        provider,
         "SUMMARIZATION",
         "Summarize the supplied research into a concise learning map for this learner. Preserve their "
         "goal, level, time constraints, prerequisites, ordering, and reliable resources. Do not generate "
@@ -159,8 +121,7 @@ def main() -> int:
         return 1
 
     syllabus = run_stage(
-        client,
-        model,
+        provider,
         "SYLLABUS GENERATION",
         "Generate a practical, ordered learning syllabus for the supplied learner. Use modules and topics, "
         "prerequisites, objectives, estimated study hours, and reliable resources. Fit all study estimates "

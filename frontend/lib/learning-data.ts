@@ -97,7 +97,7 @@ export type LearningTimelineInput = {
   studyHoursPerDay: number;
 };
 
-function timelineDurationInDays(timeline: Pick<LearningTimelineInput, "timelineType" | "targetDays" | "targetDate">) {
+export function timelineDurationInDays(timeline: Pick<LearningTimelineInput, "timelineType" | "targetDays" | "targetDate">) {
   if (timeline.timelineType === "days") return timeline.targetDays;
   if (!timeline.targetDate) return null;
 

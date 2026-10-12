@@ -36,42 +36,33 @@ def _build_prompt(
         "additional_requirements": request.additional_requirements or "",
     }
     prompt = (
-        "Create a complete, personalized curriculum using subject-specific reasoning, not a fixed template or generic topic list. "
-        "Identify the subject, intended outcome, current level, goal-appropriate target proficiency, timeline, daily study hours, "
-        "learning preferences, and additional requirements from the learner context. "
-        "Internally identify the essential knowledge areas, core concepts, subtopics, practical skills, and prerequisites "
-        "needed for the goal. Cover foundations before intermediate and advanced applications as appropriate; "
-        "do not omit essential topics merely to shorten the syllabus. For absolute beginners, assume no subject knowledge. "
-        "Prioritize the hierarchy course -> modules -> topics -> concepts, not introductory prose. "
-        "There is no course-title field: use overview for a short, descriptive course title only and objective for concise "
-        "measurable outcomes, followed by prerequisites, ordered modules, and teachable topics within each module. "
-        "Do not put the curriculum into overview or a single paragraph; avoid marketing summaries and long introductions. "
-        "Keep objective within 40 words, module descriptions within 25 words, topic descriptions within 40 words, "
-        "and resource descriptions within 20 words. Use compact JSON without indentation. "
-        "Remove repeated explanations, not essential topics or concepts; do not fill arrays to their schema maximum. "
-        "Give each module a clear title and short coverage description, and each topic an actionable title and concise "
-        "description of its exact concepts and learning objective, with realistic estimated_hours or estimated_minutes respectively. "
-        "Avoid titles such as Introduction, Overview, or Advanced Concepts unless they name the actual concepts taught. "
-        "Each topic must prepare the learner for later topics. There are no subtopic fields: organize essential concepts "
-        "and skills as short, semicolon-separated items within each topic description, not unsupported JSON fields. "
-        "Within existing descriptions, include concise plans for relevant examples, "
-        "hands-on practice, revision, projects, and assessments. Include their time in the topic estimates; "
-        "do not write full lesson content, worked exercises, or add unsupported fields. "
-        "Adapt depth, complexity, and achievable proficiency to the time budget while retaining essential foundations. "
-        "If the goal exceeds that budget, briefly state the achievable scope and remaining progression in objective; "
-        "do not promise expert mastery from a short course. "
-        "Before returning, internally review for missing foundations, important subtopics, prerequisite gaps, practical "
-        "application, alignment with the final goal, and unnecessary repetition. Add missing essentials within schema limits. "
-        "Return only the requested structured JSON with exactly the existing fields, types, and collection/string limits; "
-        "no Markdown or explanatory prose outside the JSON. "
-        "Use module IDs module-1, module-2, ... and topic IDs module-1-topic-1, module-1-topic-2, ... in order. "
-        "The total and module/topic hour estimates must fit within maximum_available_study_hours; "
-        "each module's estimated_hours must equal the sum of its topics' estimated_minutes divided by 60, "
-        "and module hours must sum to total_study_hours. Set duration_days to timeline_days. "
-        "Prefer official documentation, standards, and authoritative learning resources appropriate to the subject. "
-        "Include only resources and canonical URLs you can identify with reasonable confidence; never invent citations, "
-        "resources, or URLs or claim live web research was performed. Omit uncertain resources, not required fields; "
-        "the existing schema requires at least one reliable resource, so never fabricate one to satisfy that minimum. "
+        "Create a goal-specific curriculum, not a generic template. Treat course_name as the subject and learning_goal as the "
+        "outcome the learner should be able to demonstrate. Use skill_level to choose difficulty: assume no subject knowledge "
+        "for beginners; consolidate and apply core skills for intermediate learners; emphasize complex, independent application "
+        "for advanced learners. Retain goal prerequisites and do not infer unreported experience. "
+        "Use learning_preferences to shape topic activities: visual means diagrams, auditory means discussion or listening, "
+        "reading-writing means reading and written summaries, hands-on means applied practice, and mixed or no preference means "
+        "vary suitable formats. Apply additional_requirements "
+        "where they fit the goal and available time; briefly state a material constraint or trade-off in objective. "
+        "Use timeline_days and study_hours_per_day as a capacity limit, not a requirement to fill every available hour. Set "
+        "duration_days to timeline_days and keep total estimated work within maximum_available_study_hours. Allocate realistic "
+        "time by topic difficulty, including relevant instruction, practice, and review; do not pad estimates. "
+        "Use only existing fields: overview is a short descriptive course title; objective is a concise, measurable statement "
+        "of what the learner can do or produce. List only entry prerequisites in prerequisites. Order modules and topics so "
+        "foundations precede dependent concepts; explain useful dependencies in existing descriptions because there are no "
+        "topic-prerequisite fields. Give each module a clear purpose and each topic an actionable title, key concepts, "
+        "an observable learner action, and a relevant practical activity. Put concepts in short semicolon-separated phrases in the "
+        "topic description. Avoid generic headings and repeated content; include projects or assessment only when useful to the goal. "
+        "Keep objective within 40 words, module descriptions within 25, topic descriptions within 40, and resource descriptions "
+        "within 20. Do not write lesson content or worked exercises. Retain essential foundations while adapting scope and "
+        "proficiency to the time budget; when the goal exceeds it, state achievable scope and remaining progression without "
+        "promising mastery. "
+        "Return compact JSON only, with exactly the existing fields, types, and collection limits; do not add fields or Markdown. "
+        "Use sequential IDs: module-1, module-2, ... and module-1-topic-1, module-1-topic-2, ... . Each module's estimated_hours "
+        "must equal its topic minutes divided by 60; module hours must sum to total_study_hours, and all estimates must fit "
+        "the available-hours limit. Avoid filling arrays to their maximum. "
+        "Prefer authoritative resources and canonical URLs you know with reasonable confidence. Do not invent sources or claim "
+        "live research; omit uncertain resources, and never fabricate one to meet the schema's minimum. "
         "Learner context:\n"
         f"{json.dumps(learner_context, ensure_ascii=True)}"
     )
@@ -111,11 +102,21 @@ def generate_syllabus(
     timer_started = perf_counter()
     result = None
     error = None
+    provider_duration_ms = None
     try:
-        result = get_ai_provider().generate_structured(
-            _build_prompt(request, research_summary),
-            GeneratedSyllabus.model_json_schema(),
-        )
+        provider = get_ai_provider()
+        prompt = _build_prompt(request, research_summary)
+        response_schema = GeneratedSyllabus.model_json_schema()
+        provider_started = perf_counter()
+        try:
+            result = provider.generate_structured(
+                prompt,
+                response_schema,
+                feature="syllabus_generation",
+                request_id=execution_id,
+            )
+        finally:
+            provider_duration_ms = round((perf_counter() - provider_started) * 1000)
         syllabus = GeneratedSyllabus.model_validate_json(result.text)
         if result.sources:
             combined_sources: dict[str, SyllabusSource] = {}
@@ -147,4 +148,5 @@ def generate_syllabus(
                 result=result,
                 error=error,
                 no_search=True,
+                provider_duration_ms=provider_duration_ms,
             )

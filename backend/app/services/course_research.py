@@ -13,7 +13,8 @@ from app.api.schemas.research import (
     CourseResearchResult,
     ResearchSource,
 )
-from app.core.config import GEMINI_MODEL
+from app.core.config import GEMINI_MODEL, GEMINI_SEARCH_PRICE_PER_THOUSAND_USD
+from app.services.ai_usage import UsageLimitError, estimate_cost_usd
 from app.services.ai_provider import AIProviderError, GeminiProvider
 
 logger = getLogger("learnos.research")
@@ -24,9 +25,7 @@ if not logger.handlers:
     logger.addHandler(handler)
 logger.propagate = False
 
-INPUT_PRICE_PER_MILLION_USD = 0.75
-OUTPUT_PRICE_PER_MILLION_USD = 3.75
-SEARCH_PRICE_PER_THOUSAND_USD = 14.0
+SEARCH_PRICE_PER_THOUSAND_USD = GEMINI_SEARCH_PRICE_PER_THOUSAND_USD
 # TEMP TEST MODE: use direct Gemini research instead of Google Search.
 # Restore Google Search after staged pipeline verification.
 TEMP_DIRECT_GEMINI_RESEARCH = True
@@ -62,6 +61,7 @@ def _provider_metrics(result, *, no_search: bool = False):
     usage = result.usage
     input_tokens = usage.get("total_input_tokens") if usage else None
     output_tokens = usage.get("total_output_tokens") if usage else None
+    thinking_tokens = usage.get("total_thought_tokens") if usage else None
     total_tokens = usage.get("total_tokens") if usage else None
 
     search_queries = [] if no_search else result.search_queries
@@ -69,12 +69,14 @@ def _provider_metrics(result, *, no_search: bool = False):
     if search_query_count is None and search_queries is not None:
         search_query_count = len(search_queries)
     estimated_cost_usd = None
-    if input_tokens is not None and output_tokens is not None and search_query_count is not None:
-        estimated_cost_usd = (
-            input_tokens * INPUT_PRICE_PER_MILLION_USD
-            + output_tokens * OUTPUT_PRICE_PER_MILLION_USD
-        ) / 1_000_000 + search_query_count * SEARCH_PRICE_PER_THOUSAND_USD / 1000
-        estimated_cost_usd = round(estimated_cost_usd, 8)
+    if (input_tokens is not None and output_tokens is not None and thinking_tokens is not None
+            and search_query_count is not None):
+        try:
+            estimated_cost_usd = estimate_cost_usd(input_tokens, output_tokens + thinking_tokens)
+            estimated_cost_usd += search_query_count * SEARCH_PRICE_PER_THOUSAND_USD / 1000
+            estimated_cost_usd = round(estimated_cost_usd, 8)
+        except UsageLimitError:
+            estimated_cost_usd = None
 
     exchange_rate = os.getenv("USD_TO_INR_RATE")
     try:
@@ -87,7 +89,7 @@ def _provider_metrics(result, *, no_search: bool = False):
         "output_tokens": output_tokens,
         "total_tokens": total_tokens,
         "search_query_count": search_query_count,
-        "search_queries": search_queries,
+        "search_queries": None if search_queries is None else ["[OMITTED]" for _ in search_queries],
         "estimated_cost_usd": estimated_cost_usd,
         "estimated_cost_inr": estimated_cost_inr,
     }
@@ -116,7 +118,7 @@ def _log_execution(record: dict) -> None:
         f"Output tokens:     {record['output_tokens'] if record['output_tokens'] is not None else 'unavailable'}",
         f"Total tokens:      {token_display}",
         f"Search query count: {record['search_query_count'] if record['search_query_count'] is not None else 'unavailable'}",
-        f"Search queries:    {json.dumps(record['search_queries'], ensure_ascii=True) if record['search_queries'] is not None else 'unavailable'}",
+        "Search queries:    omitted",
         f"Estimated USD:     {cost_display}",
         f"Estimated INR:     {record['estimated_cost_inr'] if record['estimated_cost_inr'] is not None else 'unavailable'}",
         f"Error code:        {record['error_code'] if record['error_code'] is not None else 'none'}",
@@ -134,6 +136,7 @@ def log_gemini_stage(
     result=None,
     error: Exception | None = None,
     no_search: bool = False,
+    provider_duration_ms: int | None = None,
 ) -> dict:
     record = {
         "execution_id": execution_id,
@@ -153,11 +156,13 @@ def log_gemini_stage(
         "error_code": None,
         "error_message": None,
     }
+    if provider_duration_ms is not None:
+        record["provider_duration_ms"] = provider_duration_ms
     if result is not None:
         record.update(_provider_metrics(result, no_search=no_search))
     if error is not None:
         record["error_code"] = getattr(error, "status_code", None) or type(error).__name__
-        record["error_message"] = str(error)
+        record["error_message"] = "Provider request failed."
     _log_execution(record)
     return record
 
@@ -190,12 +195,18 @@ def research_course(request: CourseResearchRequest) -> tuple[str, CourseResearch
         if TEMP_DIRECT_GEMINI_RESEARCH:
             prompt = _direct_research_prompt(request)
             provider_result = provider.research_structured_direct(
-                prompt, CourseResearchResult.model_json_schema()
+                prompt,
+                CourseResearchResult.model_json_schema(),
+                feature="course_research",
+                request_id=f"{execution_id}:research",
             )
         else:
             prompt = _research_prompt(request)
             provider_result = provider.research_structured(
-                prompt, CourseResearchResult.model_json_schema()
+                prompt,
+                CourseResearchResult.model_json_schema(),
+                feature="course_research",
+                request_id=f"{execution_id}:research",
             )
         record.update(_provider_metrics(provider_result))
         if TEMP_DIRECT_GEMINI_RESEARCH:
@@ -212,7 +223,7 @@ def research_course(request: CourseResearchRequest) -> tuple[str, CourseResearch
         record["status"] = "success"
     except (AIProviderError, ValidationError, ValueError, TypeError) as exc:
         record["error_code"] = getattr(exc, "status_code", None) or type(exc).__name__
-        record["error_message"] = str(exc) if isinstance(exc, AIProviderError) else "Gemini returned invalid research data."
+        record["error_message"] = "Provider request failed." if isinstance(exc, AIProviderError) else "Gemini returned invalid research data."
         raise
     except Exception as exc:
         record["error_code"] = type(exc).__name__
@@ -246,7 +257,10 @@ def summarize_research(
     )
     try:
         provider_result = GeminiProvider().generate_structured(
-            prompt, CourseResearchSummary.model_json_schema()
+            prompt,
+            CourseResearchSummary.model_json_schema(),
+            feature="research_summarization",
+            request_id=f"{execution_id}:summary",
         )
         return CourseResearchSummary.model_validate_json(provider_result.text)
     except Exception as exc:

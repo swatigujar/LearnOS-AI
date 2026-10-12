@@ -32,6 +32,11 @@ service cloud.firestore {
           allow read: if isOwner(userId);
           allow write: if false;
         }
+
+        match /mockQuestionBanks/{bankId} {
+          // Banks include answer keys; clients must use the authenticated API.
+          allow read, write: if false;
+        }
       }
     }
   }

@@ -1,0 +1,192 @@
+import unittest
+from copy import deepcopy
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
+
+from app.services import ai_usage
+
+
+class Snapshot:
+    def __init__(self, data):
+        self._data = data
+        self.exists = data is not None
+
+    def to_dict(self):
+        return deepcopy(self._data)
+
+
+class Reference:
+    def __init__(self, database, path):
+        self.database = database
+        self.path = path
+        self.id = path.split("/")[-1]
+
+    def get(self, transaction=None):
+        return Snapshot(self.database.docs.get(self.path))
+
+
+class Transaction:
+    _read_only = False
+    _max_attempts = 1
+    _id = b"mock-usage-transaction"
+
+    def __init__(self, database):
+        self.database = database
+        self.writes = []
+
+    def _begin(self, retry_id=None):
+        pass
+
+    def _rollback(self):
+        self.writes = []
+
+    def _clean_up(self):
+        self.writes = []
+
+    def _commit(self):
+        for operation, reference, values, merge in self.writes:
+            if operation == "create" and reference.path in self.database.docs:
+                raise RuntimeError("duplicate document")
+            current = self.database.docs.get(reference.path, {}) if merge else {}
+            self.database.docs[reference.path] = {**current, **deepcopy(values)}
+        self.writes = []
+
+    def create(self, reference, values):
+        self.writes.append(("create", reference, values, False))
+
+    def set(self, reference, values, merge=False):
+        self.writes.append(("set", reference, values, merge))
+
+
+class Database:
+    def __init__(self):
+        self.docs = {}
+
+    def document(self, path):
+        return Reference(self, path)
+
+    def transaction(self):
+        return Transaction(self)
+
+
+class AIUsageLimitTests(unittest.TestCase):
+    def setUp(self):
+        self.database = Database()
+        self.firestore = patch.object(ai_usage, "get_firestore_client", return_value=self.database)
+        self.firestore.start()
+        self.addCleanup(self.firestore.stop)
+
+    def call(self, request_id, invoke, *, output_limit=10):
+        return ai_usage.run_tracked_provider_call(
+            feature="tutor",
+            request_id=request_id,
+            model="gemini-3.8-flash",
+            prompt_content="private learner question",
+            invoke=invoke,
+            max_output_tokens=output_limit,
+        )
+
+    def test_success_records_provider_tokens_request_ids_and_estimated_cost(self):
+        result = SimpleNamespace(
+            usage={
+                "total_input_tokens": 20,
+                "total_output_tokens": 5,
+                "total_thought_tokens": 3,
+                "total_tokens": 28,
+            },
+            request_id="provider-response-123",
+        )
+        with self.assertLogs(ai_usage.logger, level="INFO") as captured:
+            self.call("operation-1", lambda: result)
+        usage_records = [value for path, value in self.database.docs.items() if "/requests/" in path]
+        self.assertEqual(len(usage_records), 1)
+        record = usage_records[0]
+        self.assertEqual(record["status"], "success")
+        self.assertEqual(record["feature"], "tutor")
+        self.assertEqual(record["model"], "gemini-3.8-flash")
+        self.assertEqual(len(record["request_id"]), 64)
+        self.assertNotIn("operation-1", record["request_id"])
+        self.assertEqual(record["provider_request_id"], "provider-response-123")
+        self.assertEqual((record["input_tokens"], record["output_tokens"], record["thinking_tokens"]), (20, 5, 3))
+        self.assertEqual(record["estimated_cost_usd"], 0.000045)
+        self.assertNotIn("private learner question", repr(record))
+        self.assertNotIn("private learner question", " ".join(item.getMessage() for item in captured.records))
+
+    def test_duplicate_operation_id_never_invokes_provider_twice(self):
+        result = SimpleNamespace(usage=None, request_id=None)
+        invoke = Mock(return_value=result)
+        self.call("operation-duplicate", invoke)
+        with self.assertRaises(ai_usage.UsageLimitError):
+            self.call("operation-duplicate", invoke)
+        invoke.assert_called_once()
+
+    def test_daily_limit_blocks_before_provider_call(self):
+        invoke = Mock(return_value=SimpleNamespace(usage=None, request_id=None))
+        with patch.object(ai_usage, "AI_DAILY_REQUEST_LIMIT", 1):
+            self.call("daily-1", invoke)
+            with self.assertRaisesRegex(ai_usage.UsageLimitError, "daily"):
+                self.call("daily-2", invoke)
+        invoke.assert_called_once()
+
+    def test_monthly_estimated_cost_limit_blocks_before_provider_call(self):
+        invoke = Mock(return_value=SimpleNamespace(usage=None, request_id=None))
+        with patch.object(ai_usage, "AI_MONTHLY_ESTIMATED_COST_LIMIT_USD", 0.00001):
+            with self.assertRaisesRegex(ai_usage.UsageLimitError, "monthly"):
+                self.call("month-1", invoke)
+        invoke.assert_not_called()
+        self.assertEqual(self.database.docs, {})
+
+    def test_missing_usage_is_recorded_as_unknown_and_reservation_is_retained(self):
+        result = SimpleNamespace(usage=None, request_id="provider-response-unknown")
+        self.call("usage-missing", lambda: result)
+        request_record = next(value for path, value in self.database.docs.items() if "/requests/" in path)
+        month_record = next(value for path, value in self.database.docs.items() if "/monthly/" in path)
+        self.assertFalse(request_record["usage_metadata_available"])
+        self.assertIsNone(request_record["input_tokens"])
+        self.assertIsNone(request_record["output_tokens"])
+        self.assertIsNone(request_record["thinking_tokens"])
+        self.assertIsNone(request_record["estimated_cost_usd"])
+        self.assertGreater(request_record["reserved_estimated_cost_usd"], 0)
+        self.assertEqual(month_record["reserved_estimated_cost_usd"], request_record["reserved_estimated_cost_usd"])
+
+    def test_failed_call_records_failure_without_zeroing_unknown_cost(self):
+        with self.assertRaisesRegex(RuntimeError, "provider failure"):
+            self.call("provider-failed", lambda: (_ for _ in ()).throw(RuntimeError("provider failure")))
+        request_record = next(value for path, value in self.database.docs.items() if "/requests/" in path)
+        month_record = next(value for path, value in self.database.docs.items() if "/monthly/" in path)
+        self.assertEqual(request_record["status"], "failed")
+        self.assertIsNone(request_record["input_tokens"])
+        self.assertIsNone(request_record["estimated_cost_usd"])
+        self.assertEqual(month_record["reserved_estimated_cost_usd"], request_record["reserved_estimated_cost_usd"])
+        self.assertNotIn("provider failure", repr(request_record))
+
+    def test_missing_pricing_blocks_before_provider_call(self):
+        invoke = Mock()
+        with (
+            patch.object(ai_usage, "GEMINI_INPUT_PRICE_PER_MILLION_USD", None),
+            self.assertRaisesRegex(ai_usage.UsageLimitError, "pricing is not configured"),
+        ):
+            self.call("price-missing", invoke)
+        invoke.assert_not_called()
+
+    def test_existing_daily_record_without_count_blocks_before_provider_call(self):
+        now = ai_usage.datetime.now(ai_usage.timezone.utc)
+        daily_ref, _, _ = ai_usage._request_refs(self.database, "tutor", "daily-corrupt", now)
+        self.database.docs[daily_ref.path] = {"updated_at": "present but incomplete"}
+        invoke = Mock()
+        with self.assertRaisesRegex(ai_usage.UsageLimitError, "usage records need review"):
+            self.call("daily-corrupt", invoke)
+        invoke.assert_not_called()
+
+    def test_existing_monthly_record_without_cost_blocks_before_provider_call(self):
+        now = ai_usage.datetime.now(ai_usage.timezone.utc)
+        _, monthly_ref, _ = ai_usage._request_refs(self.database, "tutor", "monthly-corrupt", now)
+        self.database.docs[monthly_ref.path] = {"updated_at": "present but incomplete"}
+        invoke = Mock()
+        with self.assertRaisesRegex(ai_usage.UsageLimitError, "cost records need review"):
+            self.call("monthly-corrupt", invoke)
+        invoke.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main()

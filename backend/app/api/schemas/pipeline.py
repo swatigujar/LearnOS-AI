@@ -6,6 +6,6 @@ from app.api.schemas.syllabus import SyllabusGenerateResponse
 
 class CourseResearchPipelineResponse(BaseModel):
     execution_id: str
-    research: CourseResearchResult
-    summary: CourseResearchSummary
+    research: CourseResearchResult | None = None
+    summary: CourseResearchSummary | None = None
     syllabus: SyllabusGenerateResponse

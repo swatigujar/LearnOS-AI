@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from fastapi.testclient import TestClient
+from fastapi import HTTPException
 import httpx
 from pydantic import ValidationError
 
@@ -129,7 +130,60 @@ class SyllabusValidationTests(unittest.TestCase):
                     GeneratedSyllabus.model_validate(data)
 
 
-class GeminiRequestTests(unittest.TestCase):
+class SyllabusCourseInputTimelineTests(unittest.TestCase):
+    def test_duration_based_form_input_uses_target_days(self):
+        course_data = {
+            "courseName": "Python",
+            "goalText": "Build practical automation scripts",
+            "skillLevel": "beginner",
+            "timelineType": "days",
+            "targetDays": 21,
+            "targetDate": None,
+            "studyHoursPerDay": 1.5,
+            "preferredLearningStyle": "hands-on",
+            "additionalRequirements": "Use free tools.",
+        }
+
+        course_input = syllabus_route._course_input("course-123", course_data)
+
+        self.assertEqual(course_input.timeline_days, 21)
+        self.assertEqual(course_input.course_name, "Python")
+        self.assertEqual(course_input.learning_goal, "Build practical automation scripts")
+        self.assertEqual(course_input.learning_preferences, ["hands-on"])
+
+    def test_date_target_today_is_rejected_by_positive_timeline_contract(self):
+        fixed_now = datetime(2026, 4, 10, 12, tzinfo=timezone.utc)
+        course_data = make_request().model_dump(mode="json", exclude={"course_id"})
+        course_data.update(timelineType="date", targetDate="2026-04-10")
+
+        with patch.object(syllabus_route, "datetime") as route_datetime:
+            route_datetime.now.return_value = fixed_now
+            with self.assertRaises(ValidationError):
+                syllabus_route._course_input("course-123", course_data)
+
+    def test_future_date_converts_to_days_from_fixed_utc_date(self):
+        fixed_now = datetime(2026, 4, 10, 12, tzinfo=timezone.utc)
+        course_data = make_request().model_dump(mode="json", exclude={"course_id"})
+        course_data.update(timelineType="date", targetDate="2026-04-13")
+
+        with patch.object(syllabus_route, "datetime") as route_datetime:
+            route_datetime.now.return_value = fixed_now
+            course_input = syllabus_route._course_input("course-123", course_data)
+
+        self.assertEqual(course_input.timeline_days, 3)
+
+
+class GeminiTrackingBypass:
+    def setUp(self):
+        patcher = patch(
+            "app.services.ai_provider.run_tracked_provider_call",
+            side_effect=lambda **kwargs: kwargs["invoke"](),
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+
+class GeminiRequestTests(GeminiTrackingBypass, unittest.TestCase):
     def test_direct_research_uses_gemini_without_google_search_and_captures_usage(self):
         research = {
             "important_topics": ["Python syntax"],
@@ -147,6 +201,7 @@ class GeminiRequestTests(unittest.TestCase):
             usage=SimpleNamespace(model_dump=lambda **kwargs: {
                 "total_input_tokens": 120,
                 "total_output_tokens": 80,
+                "total_thought_tokens": 0,
                 "total_tokens": 200,
             }),
         )
@@ -161,6 +216,8 @@ class GeminiRequestTests(unittest.TestCase):
         payload = interactions.create.call_args.kwargs
         self.assertNotIn("tools", payload)
         self.assertEqual(payload["input"], "dynamic learner prompt")
+        self.assertEqual(payload["generation_config"]["thinking_level"], "low")
+        self.assertEqual(payload["generation_config"]["max_output_tokens"], ai_provider.AI_MAX_OUTPUT_TOKENS)
         self.assertEqual(result.usage["total_input_tokens"], 120)
         self.assertEqual(result.search_queries, [])
         self.assertEqual(result.search_query_count, 0)
@@ -187,11 +244,27 @@ class GeminiRequestTests(unittest.TestCase):
         self.assertGreater(payload["config"].http_options.timeout, 0)
         self.assertLessEqual(payload["config"].http_options.timeout, 120_000)
         self.assertEqual(payload["config"].http_options.retry_options.attempts, 0)
+        self.assertEqual(payload["config"].max_output_tokens, ai_provider.AI_MAX_OUTPUT_TOKENS)
+        self.assertEqual(payload["config"].thinking_config.thinking_level, "LOW")
         self.assertIsNone(payload["config"].response_mime_type)
         self.assertIsNone(payload["config"].response_schema)
         self.assertIn("Return only a valid JSON object, without Markdown fences or commentary.", payload["contents"])
         self.assertIn(json.dumps(GeneratedSyllabus.model_json_schema()), payload["contents"])
         self.assertEqual(generated.usage["total_tokens"], 150)
+
+    def test_structured_output_override_is_capped_by_existing_configuration_and_usage_reservation(self):
+        fake_client = Mock()
+        fake_client.models.generate_content.return_value = SimpleNamespace(text="{}", usage_metadata=None)
+        tracked = Mock(side_effect=lambda **kwargs: kwargs["invoke"]())
+        with (
+            patch.object(ai_provider, "AI_MAX_OUTPUT_TOKENS", 900),
+            patch.object(ai_provider.GeminiProvider, "_client", return_value=fake_client),
+            patch.object(ai_provider, "run_tracked_provider_call", tracked),
+        ):
+            ai_provider.GeminiProvider().generate_structured("topic prompt", {}, feature="mock_test", max_output_tokens=1800)
+        self.assertEqual(fake_client.models.generate_content.call_args.kwargs["config"].max_output_tokens, 900)
+        self.assertEqual(tracked.call_args.kwargs["max_output_tokens"], 900)
+        self.assertEqual(tracked.call_args.kwargs["feature"], "mock_test")
 
     def test_client_has_a_50_second_request_timeout(self):
         with patch("app.services.ai_provider.genai.Client") as client:
@@ -213,7 +286,7 @@ class GeminiRequestTests(unittest.TestCase):
                 arguments=SimpleNamespace(queries=["Python official tutorial"]),
             )],
             usage=SimpleNamespace(
-                model_dump=lambda **kwargs: {"total_input_tokens": 100, "total_output_tokens": 50, "total_tokens": 150},
+                model_dump=lambda **kwargs: {"total_input_tokens": 100, "total_output_tokens": 50, "total_thought_tokens": 0, "total_tokens": 150},
                 grounding_tool_count=[],
             ),
         )
@@ -255,11 +328,20 @@ class GeminiRequestTests(unittest.TestCase):
 
 class CourseResearchEndpointTests(unittest.TestCase):
     def setUp(self):
+        self.database = FakeFirestore()
+        course_path = "users/authenticated-user/courses/goal-123"
+        self.database.docs[course_path] = {
+            "courseName": "Python", "goalText": "Become job-ready", "skillLevel": "beginner",
+            "targetDays": 30, "studyHoursPerDay": 1, "syllabusVersion": 0,
+        }
+        self.firestore_patch = patch.object(syllabus_route, "get_firestore_client", return_value=self.database)
+        self.firestore_patch.start()
         app.dependency_overrides[get_current_user] = lambda: {"uid": "authenticated-user"}
         self.client = TestClient(app)
 
     def tearDown(self):
         self.client.close()
+        self.firestore_patch.stop()
         app.dependency_overrides.clear()
 
     def test_forwards_all_form_values_through_research_summary_and_generation(self):
@@ -289,7 +371,6 @@ class CourseResearchEndpointTests(unittest.TestCase):
             patch.object(syllabus_route, "research_course", return_value=("execution-123", research)) as run_research,
             patch.object(syllabus_route, "summarize_research", return_value=summary) as summarize,
             patch.object(syllabus_route, "generate_course_syllabus", return_value=syllabus_response) as generate,
-            patch.object(syllabus_route, "get_firestore_client") as get_firestore,
         ):
             response = self.client.post("/api/syllabus/research", json={
                 "courseId": "goal-123",
@@ -314,7 +395,31 @@ class CourseResearchEndpointTests(unittest.TestCase):
         self.assertEqual(generation_request.executionId, "execution-123")
         self.assertEqual(generation_request.researchSummary, summary)
         self.assertEqual(generate.call_args.args[1], {"uid": "authenticated-user"})
-        get_firestore.assert_not_called()
+        self.assertEqual(self.database.docs["users/authenticated-user/courses/goal-123"]["syllabusVersion"], 0)
+
+    def test_saved_syllabus_is_reused_before_research_or_summary(self):
+        path = "users/authenticated-user/courses/goal-123"
+        self.database.docs[path]["syllabusVersion"] = 1
+        self.database.docs[path]["syllabusStatus"] = "ready"
+        self.database.docs[f"{path}/syllabus/v1"] = make_syllabus().model_dump(mode="json")
+        with (
+            patch.object(syllabus_route, "research_course") as research,
+            patch.object(syllabus_route, "summarize_research") as summarize,
+            patch.object(syllabus_route, "generate_course_syllabus") as generate,
+        ):
+            response = self.client.post("/api/syllabus/research", json={
+                "courseId": "goal-123", "courseName": "Python", "goalText": "Become job-ready",
+                "skillLevel": "beginner", "timelineType": "days", "targetDays": 30,
+                "targetDate": "", "studyHoursPerDay": 1, "preferredLearningStyle": "hands-on",
+                "additionalRequirements": "Use free resources",
+            })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["research"], None)
+        self.assertEqual(response.json()["summary"], None)
+        self.assertEqual(response.json()["syllabus"]["syllabusVersion"], 1)
+        research.assert_not_called()
+        summarize.assert_not_called()
+        generate.assert_not_called()
 
     def test_research_failure_stops_summary_and_syllabus_generation(self):
         with (
@@ -334,7 +439,7 @@ class CourseResearchEndpointTests(unittest.TestCase):
                 "preferredLearningStyle": "hands-on",
                 "additionalRequirements": "Use free resources",
             })
-        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.status_code, 503)
         summarize.assert_not_called()
         generate.assert_not_called()
 
@@ -407,7 +512,7 @@ class CourseResearchEndpointTests(unittest.TestCase):
                 "preferredLearningStyle": "hands-on",
                 "additionalRequirements": "Use free resources",
             })
-        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.status_code, 429)
         self.assertEqual(response.json()["detail"], "Course research failed; no syllabus was generated.")
         self.assertNotIn("telemetry", response.json())
 
@@ -475,7 +580,7 @@ class CourseResearchLoggingTests(unittest.TestCase):
         provider_result = ai_provider.ProviderResult(
             text=summary.model_dump_json(),
             sources=[],
-            usage={"total_input_tokens": 120, "total_output_tokens": 80, "total_tokens": 200},
+            usage={"total_input_tokens": 120, "total_output_tokens": 80, "total_thought_tokens": 0, "total_tokens": 200},
         )
         with (
             patch.object(ai_provider.GeminiProvider, "generate_structured", return_value=provider_result),
@@ -513,7 +618,7 @@ class CourseResearchLoggingTests(unittest.TestCase):
                 "sources": [{"title": "Python Tutorial", "url": "https://docs.python.org/3/tutorial/"}],
             }),
             sources=[],
-            usage={"total_input_tokens": 100, "total_output_tokens": 50, "total_tokens": 150},
+            usage={"total_input_tokens": 100, "total_output_tokens": 50, "total_thought_tokens": 0, "total_tokens": 150},
             search_queries=[],
             search_query_count=0,
         )
@@ -610,7 +715,8 @@ class CourseResearchLoggingTests(unittest.TestCase):
         self.assertEqual(record["status"], "failed")
         self.assertIsNone(record["input_tokens"])
         self.assertEqual(record["error_code"], 429)
-        self.assertEqual(record["error_message"], str(provider_error))
+        self.assertEqual(record["error_message"], "Provider request failed.")
+        self.assertNotIn("quota", captured.records[0].getMessage())
         self.assertIsInstance(record["duration_ms"], int)
         self.assertIsNotNone(record["completed_at"])
         self.assertIsNone(record["estimated_cost_usd"])
@@ -618,7 +724,7 @@ class CourseResearchLoggingTests(unittest.TestCase):
         self.assertIn("Error code:        429", captured.records[1].getMessage())
 
 
-class GeminiProviderFailureTests(unittest.TestCase):
+class GeminiProviderFailureTests(GeminiTrackingBypass, unittest.TestCase):
     def test_syllabus_generation_uses_summary_and_logs_usage(self):
         summary = CourseResearchSummary(
             summary="Python foundations for practical scripting.",
@@ -634,7 +740,7 @@ class GeminiProviderFailureTests(unittest.TestCase):
         provider.generate_structured.return_value = ai_provider.ProviderResult(
             text=make_syllabus().model_dump_json(),
             sources=[],
-            usage={"total_input_tokens": 200, "total_output_tokens": 100, "total_tokens": 300},
+            usage={"total_input_tokens": 200, "total_output_tokens": 100, "total_thought_tokens": 0, "total_tokens": 300},
         )
         with (
             patch("app.services.syllabus_generator.get_ai_provider", return_value=provider),
@@ -715,20 +821,45 @@ class GeminiProviderFailureTests(unittest.TestCase):
         client.models.generate_content.assert_called_once()
 
     def test_generator_dispatches_learner_context_through_provider(self):
+        request = make_request(
+            course_name="Applied Python",
+            learning_goal="Build weekly automation scripts",
+            skill_level="intermediate",
+            timeline_days=45,
+            study_hours_per_day=1.5,
+            learning_preferences=["visual", "hands-on"],
+            additional_requirements="Use free resources and include spreadsheet automation.",
+        )
         provider = Mock()
         provider.generate_structured.return_value = ai_provider.ProviderResult(
-            text=make_syllabus().model_dump_json(), sources=[]
+            text=make_syllabus(duration_days=45).model_dump_json(), sources=[]
         )
         with patch("app.services.syllabus_generator.get_ai_provider", return_value=provider):
-            generated = generate_syllabus(make_request())
+            generated = generate_syllabus(request)
         self.assertEqual(generated.overview, "Python Foundations")
         prompt, schema = provider.generate_structured.call_args.args
-        self.assertIn('"course_name": "Python"', prompt)
-        self.assertIn('"maximum_available_study_hours": 30', prompt)
-        self.assertIn("topic descriptions within 40 words", prompt)
-        self.assertIn("Use compact JSON without indentation", prompt)
-        self.assertIn("Remove repeated explanations, not essential topics or concepts", prompt)
+        self.assertIn('"course_name": "Applied Python"', prompt)
+        self.assertIn('"learning_goal": "Build weekly automation scripts"', prompt)
+        self.assertIn('"skill_level": "intermediate"', prompt)
+        self.assertIn('"timeline_days": 45', prompt)
+        self.assertIn('"study_hours_per_day": 1.5', prompt)
+        self.assertIn('"maximum_available_study_hours": 67.5', prompt)
+        self.assertIn('"learning_preferences": ["visual", "hands-on"]', prompt)
+        self.assertIn('"additional_requirements": "Use free resources and include spreadsheet automation."', prompt)
+        self.assertIn("Use learning_preferences to shape topic activities", prompt)
+        self.assertIn("reading-writing means reading and written summaries", prompt)
+        self.assertIn("Apply additional_requirements where they fit the goal and available time", prompt)
+        self.assertIn("Use skill_level to choose difficulty", prompt)
+        self.assertIn("consolidate and apply core skills for intermediate learners", prompt)
+        self.assertIn("outcome the learner should be able to demonstrate", prompt)
+        self.assertIn("Use timeline_days and study_hours_per_day as a capacity limit", prompt)
+        self.assertIn("foundations precede dependent concepts", prompt)
+        self.assertIn("an observable learner action, and a relevant practical activity", prompt)
+        self.assertIn("topic descriptions within 40", prompt)
+        self.assertIn("Return compact JSON only", prompt)
+        self.assertIn("do not add fields or Markdown", prompt)
         self.assertEqual(schema["title"], "GeneratedSyllabus")
+        provider.generate_structured.assert_called_once()
 
     def test_direct_generation_logs_usage_with_local_execution_id(self):
         provider = Mock()
@@ -738,6 +869,8 @@ class GeminiProviderFailureTests(unittest.TestCase):
         )
         with (
             patch("app.services.syllabus_generator.get_ai_provider", return_value=provider),
+            patch("app.services.syllabus_generator.perf_counter", side_effect=[10.0, 11.0, 12.25]),
+            patch("app.services.course_research.perf_counter", return_value=16.0),
             self.assertLogs("learnos.research", level="INFO") as captured,
         ):
             generate_syllabus(make_request())
@@ -748,10 +881,34 @@ class GeminiProviderFailureTests(unittest.TestCase):
         self.assertEqual(record["input_tokens"], 200)
         self.assertEqual(record["output_tokens"], 100)
         self.assertEqual(record["total_tokens"], 300)
+        self.assertEqual(record["provider_duration_ms"], 1250)
+        self.assertEqual(record["duration_ms"], 6000)
         self.assertNotIn("Become job-ready", captured.records[0].getMessage())
 
+    def test_failed_provider_logs_provider_and_overall_durations(self):
+        provider = Mock()
+        provider.generate_structured.side_effect = ai_provider.AIProviderError(
+            "gemini", "private learner prompt data", 429,
+        )
+        with (
+            patch("app.services.syllabus_generator.get_ai_provider", return_value=provider),
+            patch("app.services.syllabus_generator.perf_counter", side_effect=[20.0, 21.0, 22.0]),
+            patch("app.services.course_research.perf_counter", return_value=24.0),
+            self.assertLogs("learnos.research", level="INFO") as captured,
+        ):
+            with self.assertRaises(SyllabusGenerationError):
+                generate_syllabus(make_request())
 
-class GeminiSdkNoRetryTests(unittest.TestCase):
+        provider.generate_structured.assert_called_once()
+        record = json.loads(captured.records[0].getMessage())
+        self.assertEqual(record["status"], "failed")
+        self.assertEqual(record["provider_duration_ms"], 1000)
+        self.assertEqual(record["duration_ms"], 4000)
+        self.assertNotIn("Become job-ready", captured.records[0].getMessage())
+        self.assertNotIn("private learner prompt data", captured.records[0].getMessage())
+
+
+class GeminiSdkNoRetryTests(GeminiTrackingBypass, unittest.TestCase):
     def test_syllabus_transient_http_errors_are_not_retried(self):
         for status_code in (503, 504):
             with self.subTest(status_code=status_code):
@@ -874,14 +1031,23 @@ class GeminiProviderSelectionTests(unittest.TestCase):
     def test_factory_returns_gemini_provider(self):
         self.assertIsInstance(ai_provider.get_ai_provider(), ai_provider.GeminiProvider)
 
+    @patch.object(ai_route, "AI_TEST_ENDPOINT_ENABLED", True)
     @patch.object(ai_route, "get_ai_provider")
     def test_connectivity_endpoint_reports_gemini(self, get_provider):
         get_provider.return_value = SimpleNamespace(
             name="gemini", model=GEMINI_MODEL, test_connection=Mock()
         )
-        self.assertEqual(ai_route.test_ai_provider(), {
+        self.assertEqual(ai_route.test_ai_provider({"uid": "test-user"}), {
             "provider": "gemini", "model": GEMINI_MODEL, "status": "ok",
         })
+
+    @patch.object(ai_route, "AI_TEST_ENDPOINT_ENABLED", False)
+    @patch.object(ai_route, "get_ai_provider")
+    def test_connectivity_endpoint_is_disabled_by_default(self, get_provider):
+        with self.assertRaises(HTTPException) as raised:
+            ai_route.test_ai_provider({"uid": "test-user"})
+        self.assertEqual(raised.exception.status_code, 404)
+        get_provider.assert_not_called()
 
 
 class FakeReference:
@@ -978,8 +1144,28 @@ class SyllabusEndpointTests(unittest.TestCase):
         app.dependency_overrides.clear()
 
     def test_saves_validated_syllabus_to_authenticated_course(self):
-        response = self.client.post("/api/syllabus/generate", json={"courseId": "course-123"})
+        timers = iter([10.0, 11.0, 13.0, 14.0, 18.0, 20.0, 22.0, 25.0])
+        with (
+            patch.object(syllabus_route, "perf_counter", side_effect=lambda: next(timers)),
+            self.assertLogs("app.api.routes.syllabus", level="INFO") as captured,
+        ):
+            response = self.client.post("/api/syllabus/generate", json={"courseId": "course-123"})
         self.assertEqual(response.status_code, 200)
+        record = json.loads(captured.records[0].getMessage().split("SYLLABUS_TIMING ", 1)[1])
+        self.assertEqual(record["status_code"], 200)
+        self.assertFalse(record["reused_syllabus"])
+        self.assertEqual(record["claim_duration_ms"], 2000)
+        self.assertEqual(record["generation_validation_duration_ms"], 4000)
+        self.assertEqual(record["finalize_duration_ms"], 2000)
+        self.assertEqual(record["total_duration_ms"], 15000)
+        self.assertEqual(self.generator.call_args.kwargs["execution_id"], record["generation_id"])
+        self.assertEqual(set(record), {
+            "generation_id", "status_code", "reused_syllabus", "claim_duration_ms",
+            "generation_validation_duration_ms", "finalize_duration_ms", "total_duration_ms",
+        })
+        self.assertNotIn("course-123", captured.records[0].getMessage())
+        self.assertNotIn("authenticated-user", captured.records[0].getMessage())
+        self.assertNotIn("Become job-ready", captured.records[0].getMessage())
         body = response.json()
         self.assertEqual((body["courseId"], body["syllabusId"], body["syllabusVersion"], body["status"]), ("course-123", "v1", 1, "ready"))
         course = self.database.docs[self.database.course_path]
@@ -999,10 +1185,41 @@ class SyllabusEndpointTests(unittest.TestCase):
     def test_existing_ready_syllabus_is_returned_without_regeneration(self):
         first = self.client.post("/api/syllabus/generate", json={"courseId": "course-123"})
         saved = deepcopy(self.database.docs[self.database.course_path + "/syllabus/v1"])
-        second = self.client.post("/api/syllabus/generate", json={"courseId": "course-123"})
+        timers = iter([30.0, 31.0, 34.0, 35.0])
+        with (
+            patch.object(syllabus_route, "perf_counter", side_effect=lambda: next(timers)),
+            self.assertLogs("app.api.routes.syllabus", level="INFO") as captured,
+        ):
+            second = self.client.post("/api/syllabus/generate", json={"courseId": "course-123"})
         self.assertEqual(first.json(), second.json())
         self.generator.assert_called_once()
         self.assertEqual(saved, self.database.docs[self.database.course_path + "/syllabus/v1"])
+        record = json.loads(captured.records[0].getMessage().split("SYLLABUS_TIMING ", 1)[1])
+        self.assertEqual(record["status_code"], 200)
+        self.assertTrue(record["reused_syllabus"])
+        self.assertEqual(record["claim_duration_ms"], 3000)
+        self.assertIsNone(record["generation_validation_duration_ms"])
+        self.assertEqual(record["finalize_duration_ms"], 0)
+        self.assertEqual(record["total_duration_ms"], 5000)
+
+    def test_claim_failure_emits_only_safe_timing_fields(self):
+        timers = iter([0.0, 1.0, 3.0, 5.0])
+        with (
+            patch.object(syllabus_route, "_claim_generation", side_effect=RuntimeError("private learner data")),
+            patch.object(syllabus_route, "perf_counter", side_effect=lambda: next(timers)),
+            self.assertLogs("app.api.routes.syllabus", level="INFO") as captured,
+        ):
+            response = self.client.post("/api/syllabus/generate", json={"courseId": "course-123"})
+
+        self.assertEqual(response.status_code, 503)
+        self.generator.assert_not_called()
+        record = json.loads(captured.records[0].getMessage().split("SYLLABUS_TIMING ", 1)[1])
+        self.assertEqual(record["status_code"], 503)
+        self.assertEqual(record["claim_duration_ms"], 2000)
+        self.assertIsNone(record["generation_validation_duration_ms"])
+        self.assertEqual(record["finalize_duration_ms"], 0)
+        self.assertEqual(record["total_duration_ms"], 5000)
+        self.assertNotIn("private learner data", captured.records[0].getMessage())
 
     def test_direct_generation_bypasses_research_and_saves_provider_output(self):
         provider = Mock()
@@ -1014,6 +1231,8 @@ class SyllabusEndpointTests(unittest.TestCase):
             patch("app.services.syllabus_generator.get_ai_provider", return_value=provider),
             patch.object(syllabus_route, "research_course") as research,
             patch.object(syllabus_route, "summarize_research") as summary,
+            self.assertLogs("app.api.routes.syllabus", level="INFO") as route_logs,
+            self.assertLogs("learnos.research", level="INFO") as generator_logs,
         ):
             first = self.client.post("/api/syllabus/generate", json={"courseId": "course-123"})
             second = self.client.post("/api/syllabus/generate", json={"courseId": "course-123"})
@@ -1022,6 +1241,12 @@ class SyllabusEndpointTests(unittest.TestCase):
         research.assert_not_called()
         summary.assert_not_called()
         provider.generate_structured.assert_called_once()
+        route_record = json.loads(route_logs.records[0].getMessage().split("SYLLABUS_TIMING ", 1)[1])
+        generator_record = json.loads(generator_logs.records[0].getMessage())
+        self.assertEqual(route_record["generation_id"], generator_record["execution_id"])
+        self.assertEqual(self.generator.call_args.kwargs["execution_id"], route_record["generation_id"])
+        self.assertEqual(provider.generate_structured.call_args.kwargs["request_id"], route_record["generation_id"])
+        self.assertEqual(provider.generate_structured.call_args.kwargs["feature"], "syllabus_generation")
         prompt, schema = provider.generate_structured.call_args.args
         self.assertIn('"learning_goal": "Become job-ready"', prompt)
         self.assertNotIn("Research summary to use", prompt)
@@ -1062,17 +1287,41 @@ class SyllabusEndpointTests(unittest.TestCase):
         self.assertEqual(response.json()["syllabusVersion"], 1)
 
     def test_provider_failure_sets_failed_status(self):
-        self.generator.side_effect = SyllabusGenerationError("Gemini generation failed.")
-        response = self.client.post("/api/syllabus/generate", json={"courseId": "course-123"})
+        self.generator.side_effect = SyllabusGenerationError("private learner data must not appear in logs")
+        timers = iter([0.0, 1.0, 2.0, 3.0, 5.0, 6.0, 7.0, 10.0])
+        with (
+            patch.object(syllabus_route, "perf_counter", side_effect=lambda: next(timers)),
+            self.assertLogs("app.api.routes.syllabus", level="INFO") as captured,
+        ):
+            response = self.client.post("/api/syllabus/generate", json={"courseId": "course-123"})
         self.assertEqual(response.status_code, 502)
         self.assertEqual(self.database.docs[self.database.course_path]["syllabusStatus"], "failed")
+        record = json.loads(captured.records[0].getMessage().split("SYLLABUS_TIMING ", 1)[1])
+        self.assertEqual(record["status_code"], 502)
+        self.assertFalse(record["reused_syllabus"])
+        self.assertEqual(record["claim_duration_ms"], 1000)
+        self.assertEqual(record["generation_validation_duration_ms"], 2000)
+        self.assertEqual(record["finalize_duration_ms"], 1000)
+        self.assertEqual(record["total_duration_ms"], 10000)
+        self.assertNotIn("private learner data", captured.records[0].getMessage())
 
     def test_save_failure_sets_failed_without_partial_syllabus(self):
         self.database.fail_create = True
-        response = self.client.post("/api/syllabus/generate", json={"courseId": "course-123"})
+        timers = iter([0.0, 1.0, 2.0, 3.0, 5.0, 6.0, 8.0, 9.0, 11.0, 13.0])
+        with (
+            patch.object(syllabus_route, "perf_counter", side_effect=lambda: next(timers)),
+            self.assertLogs("app.api.routes.syllabus", level="INFO") as captured,
+        ):
+            response = self.client.post("/api/syllabus/generate", json={"courseId": "course-123"})
         self.assertEqual(response.status_code, 503)
         self.assertEqual(self.database.docs[self.database.course_path]["syllabusStatus"], "failed")
         self.assertNotIn(self.database.course_path + "/syllabus/v1", self.database.docs)
+        record = json.loads(captured.records[0].getMessage().split("SYLLABUS_TIMING ", 1)[1])
+        self.assertEqual(record["status_code"], 503)
+        self.assertEqual(record["claim_duration_ms"], 1000)
+        self.assertEqual(record["generation_validation_duration_ms"], 2000)
+        self.assertEqual(record["finalize_duration_ms"], 4000)
+        self.assertEqual(record["total_duration_ms"], 13000)
 
     def test_concurrent_request_does_not_generate_twice(self):
         course = self.database.docs[self.database.course_path]
@@ -1124,7 +1373,7 @@ class SyllabusEndpointTests(unittest.TestCase):
         legacy = {"courseName": "Python", "goalText": "Become job-ready", "skillLevel": "beginner", "targetDays": 30, "studyHoursPerDay": 1}
         self.database.docs = {legacy_path: legacy}
 
-        def change_course(request):
+        def change_course(request, **kwargs):
             legacy["targetDays"] = 20
             return make_syllabus()
 

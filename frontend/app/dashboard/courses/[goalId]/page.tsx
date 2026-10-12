@@ -8,6 +8,7 @@ import { CourseSyllabus } from "@/components/course-syllabus";
 import {
   deleteLearningGoal,
   getLearningGoal,
+  timelineDurationInDays,
   updateLearningGoalTimeline,
   type LearningGoal,
 } from "@/lib/learning-data";
@@ -81,8 +82,8 @@ export default function LearningWorkspacePage() {
       setEditingTimeline(false);
       setConfirmUpdate(false);
       setNotice(result.accelerated
-        ? "Timeline updated. The course is marked for accelerated prioritization."
-        : "Timeline and study time updated.");
+        ? "Timeline updated and marked for accelerated prioritization. No syllabus was generated or revised."
+        : "Timeline and study time updated. No syllabus was generated or revised.");
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : "Unable to update the course timeline.");
       setConfirmUpdate(false);
@@ -126,6 +127,11 @@ export default function LearningWorkspacePage() {
     : goal.targetDays
       ? `${goal.targetDays} days`
       : "Not set";
+  const currentTimelineDays = timelineDurationInDays({
+    timelineType: goal.timelineType ?? (goal.targetDate ? "date" : "days"),
+    targetDays: goal.targetDays ?? null,
+    targetDate: goal.targetDate ?? null,
+  });
 
   const suggestedPriority = goal.timelinePriority === "accelerated";
 
@@ -134,9 +140,14 @@ export default function LearningWorkspacePage() {
       <div className="mx-auto max-w-7xl">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <Link className="text-sm font-semibold text-[#586761] hover:text-[#1b302b]" href="/dashboard">← Dashboard</Link>
-          <button className="rounded-md border border-red-200 px-3 py-2 text-sm font-semibold text-red-700 transition hover:border-red-400 disabled:opacity-60" disabled={deleting} onClick={() => setConfirmDelete(true)} type="button">
-            Delete course
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Link className="rounded-md border border-[#d9ddd5] bg-white px-3 py-2 text-sm font-semibold text-[#1b6657] transition hover:border-[#1b6657] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1b6657]" href={`/dashboard/courses/${goal.id}/mock-test`}>
+              Mock Test
+            </Link>
+            <button className="rounded-md border border-red-200 px-3 py-2 text-sm font-semibold text-red-700 transition hover:border-red-400 disabled:opacity-60" disabled={deleting} onClick={() => setConfirmDelete(true)} type="button">
+              Delete course
+            </button>
+          </div>
         </div>
         <section className="mt-6 border-b border-[#e0e2d9] py-5">
           <p className="text-xs font-bold uppercase tracking-wide text-[#d16445]">Learning workspace</p>
@@ -191,7 +202,13 @@ export default function LearningWorkspacePage() {
           {goal.additionalRequirements && <div className="mt-6 border-t border-[#edf0e9] pt-5"><h3 className="text-xs font-semibold uppercase tracking-wide text-[#89938c]">Additional requirements</h3><p className="mt-2 whitespace-pre-wrap text-sm leading-6">{goal.additionalRequirements}</p></div>}
         </section>
         </details>
-        <CourseSyllabus courseId={goal.id} key={goal.id} />
+        <CourseSyllabus
+          courseId={goal.id}
+          currentStudyHoursPerDay={goal.studyHoursPerDay ?? null}
+          currentTimelineDays={currentTimelineDays}
+          key={goal.id}
+          timelineUpdated={Boolean(goal.timelineUpdated)}
+        />
       </div>
 
       {confirmDelete && (
@@ -211,7 +228,7 @@ export default function LearningWorkspacePage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-5" role="presentation">
           <section aria-labelledby="update-timeline-title" aria-modal="true" className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl" role="dialog">
             <h2 className="text-lg font-semibold" id="update-timeline-title">Confirm timeline update</h2>
-            <p className="mt-3 text-sm leading-6 text-[#586761]">Save the updated timeline and study hours? Existing course content will be preserved.</p>
+            <p className="mt-3 text-sm leading-6 text-[#586761]">Save the updated timeline and study hours? This does not generate or revise a syllabus.</p>
             <div className="mt-6 flex justify-end gap-3">
               <button className="rounded-md border border-[#d9ddd5] px-4 py-2.5 text-sm font-semibold" disabled={savingUpdate} onClick={() => setConfirmUpdate(false)} type="button">Cancel</button>
               <button className="rounded-md bg-[#1b302b] px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-60" disabled={savingUpdate} onClick={saveTimelineUpdate} type="button">{savingUpdate ? "Saving..." : "Confirm changes"}</button>

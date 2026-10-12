@@ -193,7 +193,7 @@ def tutor_action(request: TutorAction, user: dict = Depends(get_current_user)):
             module, topic, conversation = prepared
             try:
                 reply = teach(context[4], module, topic, context[3], context[5], conversation,
-                              request.action, request.message)
+                              request.action, request.message, request_id=request.operationId)
             except Exception as exc:
                 _finish(context[0].transaction(), context, request, None)
                 if isinstance(exc, AIProviderError):
