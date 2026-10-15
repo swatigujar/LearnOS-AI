@@ -86,7 +86,24 @@ export async function getLearningGoal(userId: string, goalId: string) {
   return goalSnapshot.exists() ? mapGoal(goalSnapshot) : null;
 }
 
-export async function deleteLearningGoal(userId: string, goalId: string) {
+export async function deleteLearningGoal(userId: string, goalId: string, idToken: string) {
+  let hasNotes = false;
+  try {
+    hasNotes = !(await getDocs(collection(db, "users", userId, "courses", goalId, "notes"))).empty;
+  } catch {
+    // Keep the existing course deletion available if the optional Notes read is not deployed yet.
+  }
+  if (hasNotes) {
+    const response = await fetch(`/api/notes/${encodeURIComponent(goalId)}`, {
+      method: "DELETE", headers: { Authorization: `Bearer ${idToken}` }, cache: "no-store",
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (!response.ok) {
+      let detail = "Unable to remove this course's Notes. The course was not deleted.";
+      try { detail = (await response.json()).detail ?? detail; } catch { /* Keep the safe fallback. */ }
+      throw new Error(detail);
+    }
+  }
   await deleteDoc(doc(db, "users", userId, "learningGoals", goalId));
 }
 
