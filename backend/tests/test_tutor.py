@@ -1,6 +1,6 @@
 import json
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock, patch
 
 from app.api.schemas.tutor import TutorAction, TutorReply
@@ -167,17 +167,25 @@ class TutorEndpointTests(unittest.TestCase):
         self.model.assert_not_called()
 
     def test_confirm_every_concept_then_confirm_module_and_resume(self):
+        state_path = self.database.course_path + "/tutor/state"
         self.assertEqual(self.action("confirm", conceptIndex=0).status_code, 409)
+        self.assertNotIn("lastStudyAt", self.database.docs.get(state_path, {}))
         self.assertEqual(self.action("start").status_code, 200)
+        self.assertNotIn("lastStudyAt", self.database.docs[state_path])
         self.assertEqual(self.state().json()["topic_status"]["module-1-topic-1"], "in_progress")
         second = make_reply().model_copy(update={"concept_title": "Variables"})
         self.model.return_value = second
         confirmed = self.action("confirm", conceptIndex=0)
         self.assertEqual(confirmed.status_code, 200)
         self.assertEqual(confirmed.json()["conversation"]["concept_index"], 1)
+        self.assertNotIn("lastStudyAt", self.database.docs[state_path])
         self.assertEqual(self.action("confirm_module").status_code, 409)
         final = self.action("confirm", conceptIndex=1)
         self.assertEqual(final.json()["topic_status"]["module-1-topic-1"], "completed")
+        self.assertIsInstance(self.database.docs[state_path]["lastStudyAt"], datetime)
+        event_path = self.database.course_path + "/tutorCompletions/v1-module-1-topic-1"
+        self.assertEqual(self.database.docs[event_path]["lessonTitle"], "Syntax and values")
+        self.assertIsInstance(self.database.docs[event_path]["completedAt"], datetime)
         self.assertEqual(final.json()["module_status"]["module-1"], "in_progress")
         self.assertEqual(self.action("confirm_module").json()["module_status"]["module-1"], "completed")
         resumed = self.state().json()
@@ -255,12 +263,37 @@ class TutorEndpointTests(unittest.TestCase):
         self.action("start")
         self.model.side_effect = AIProviderError("gemini", "unavailable", 504)
         self.assertEqual(self.action("confirm", conceptIndex=0).status_code, 504)
+        state_path = self.database.course_path + "/tutor/state"
+        self.assertNotIn("lastStudyAt", self.database.docs[state_path])
         saved = self.state().json()
         self.assertEqual(saved["conversation"]["concept_index"], 1)
         self.assertIsNone(saved["conversation"]["taught_index"])
         self.assertEqual(saved["topic_status"]["module-1-topic-1"], "in_progress")
         self.assertFalse(saved["can_confirm"])
         self.assertEqual(self.action("confirm", conceptIndex=1).status_code, 409)
+        self.assertFalse(any("tutorCompletions" in path for path in self.database.docs))
+
+    def test_completion_does_not_replace_a_newer_activity_timestamp(self):
+        self.action("start")
+        state_path = self.database.course_path + "/tutor/state"
+        newer_timestamp = datetime.now(timezone.utc) + timedelta(days=1)
+        self.database.docs[state_path]["lastStudyAt"] = newer_timestamp
+        self.model.return_value = make_reply().model_copy(update={"concept_title": "Variables"})
+
+        self.assertEqual(self.action("confirm", conceptIndex=0).status_code, 200)
+        self.assertEqual(self.action("confirm", conceptIndex=1).status_code, 200)
+        self.assertEqual(self.database.docs[state_path]["lastStudyAt"], newer_timestamp)
+
+    def test_completion_does_not_add_an_older_tutor_timestamp_than_course_activity(self):
+        self.action("start")
+        course_path = self.database.course_path
+        state_path = course_path + "/tutor/state"
+        self.database.docs[course_path]["lastActivityAt"] = datetime.now(timezone.utc) + timedelta(days=1)
+        self.model.return_value = make_reply().model_copy(update={"concept_title": "Variables"})
+
+        self.assertEqual(self.action("confirm", conceptIndex=0).status_code, 200)
+        self.assertEqual(self.action("confirm", conceptIndex=1).status_code, 200)
+        self.assertNotIn("lastStudyAt", self.database.docs[state_path])
 
     def test_invalid_model_data_is_not_persisted_as_teaching(self):
         self.model.side_effect = ValueError("invalid AI JSON")
