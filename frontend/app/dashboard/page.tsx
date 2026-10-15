@@ -14,7 +14,7 @@ import {
   type LearningGoal,
 } from "@/lib/learning-data";
 
-const sections = ["Dashboard", "AI Tutor", "Practice", "Notes", "Progress / Mastery"] as const;
+const sections = ["Dashboard", "Practice", "Notes", "Progress / Mastery"] as const;
 type Section = (typeof sections)[number];
 
 export default function DashboardPage() {

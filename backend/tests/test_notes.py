@@ -9,13 +9,13 @@ from pydantic import ValidationError
 from fastapi.testclient import TestClient
 
 from app.api.dependencies import get_current_user
-from app.api.schemas.notes import GeneratedNotes, NoteResearchResult, NoteSection
+from app.api.schemas.notes import GeneratedNotes, NoteSection
 from app.api.schemas.syllabus import GeneratedSyllabus, SyllabusSource
 from app.api.routes import notes as notes_route
 from app.main import app
 from app.services import notes as notes_service
 from app.services.ai_provider import AIProviderError, GeminiProvider
-from app.services.notes import _grounded_source_records, _safe_failure_reason, _validate_grounding
+from app.services.notes import _notes_prompt, _safe_failure_reason, _saved_source_records
 
 
 class NotesMemoryReference:
@@ -93,18 +93,25 @@ class NotesSchemaTests(unittest.TestCase):
 
         self.assertEqual(summary, "title: string_type")
         self.assertNotIn("private learner content", summary)
-        self.assertEqual(
-            _safe_failure_reason(ValueError("No grounded sources were returned.")),
-            "No grounded sources were returned.",
-        )
+        self.assertEqual(_safe_failure_reason(ValueError("No grounded sources were returned.")), "")
         self.assertEqual(_safe_failure_reason(ValueError("arbitrary generated text")), "")
 
-    def test_grounded_sources_are_required_and_deduplicated(self):
+    def test_saved_syllabus_sources_are_deduplicated(self):
         source = SyllabusSource(title="Python docs", url="https://docs.python.org/3/", source_type="official",
                                 description="Official Python documentation.")
-        self.assertEqual(len(_grounded_source_records([source, source])), 1)
-        with self.assertRaisesRegex(ValueError, "No grounded sources"):
-            _grounded_source_records([])
+        self.assertEqual(len(_saved_source_records(SimpleNamespace(resources=[source, source]))), 1)
+
+    def test_notes_prompt_uses_saved_sources_without_claiming_live_search(self):
+        source = SyllabusSource(title="Python docs", url="https://docs.python.org/3/", source_type="official",
+                                description="Official Python documentation.")
+        prompt = _notes_prompt(
+            {}, SimpleNamespace(objective="Learn Python"),
+            SimpleNamespace(title="Basics", description="Python basics"),
+            SimpleNamespace(title="Variables", description="Explain variable assignment"), [], [],
+            [source.model_dump(mode="json")],
+        )
+        self.assertIn("No live web search", prompt)
+        self.assertIn("https://docs.python.org/3/", prompt)
 
     def test_notes_require_covered_objectives_and_nonnegative_source_refs(self):
         with self.assertRaises(ValidationError):
@@ -117,16 +124,6 @@ class NotesSchemaTests(unittest.TestCase):
                 coverage_checklist=[{"objective": "Explain values", "covered": False, "evidence": ""}],
                 quick_review=["Values hold data."],
             )
-
-    def test_research_claim_must_match_a_google_grounded_source(self):
-        research = NoteResearchResult.model_validate({"verified_claims": [{
-            "claim_id": "claim-1", "statement": "Verified fact", "source_urls": ["https://example.com/"],
-        }]})
-        source = SyllabusSource(title="Official guide", url="https://docs.example.org/", source_type="official",
-                                description="An official guide.")
-        with self.assertRaises(ValueError):
-            _validate_grounding(research, [source])
-
 
 class NotesSavedDataFetchTests(unittest.TestCase):
     def test_worker_loads_owner_course_syllabus_and_saved_tutor_lesson(self):
@@ -183,7 +180,6 @@ class NotesSavedDataFetchTests(unittest.TestCase):
         )
         provider = Mock()
         provider.model = "test-content-model"
-        provider.research_grounded_text.return_value = SimpleNamespace(text="Verified research brief.", sources=[source])
         provider.generate_structured.return_value = SimpleNamespace(text=generated.model_dump_json())
         provider.generate_handwritten_jpeg.return_value = b"\xff\xd8\xfftest-jpeg"
         image_blob = Mock()
@@ -200,13 +196,14 @@ class NotesSavedDataFetchTests(unittest.TestCase):
         ):
             notes_service.generate_topic_notes(uid, course_id, topic_id, 1)
 
-        research_prompt = provider.research_grounded_text.call_args.args[0]
         notes_prompt = provider.generate_structured.call_args.args[0]
-        self.assertIn("Python programming", research_prompt)
-        self.assertIn("Python variables", research_prompt)
+        self.assertIn("Python programming", notes_prompt)
+        self.assertIn("Python variables", notes_prompt)
         self.assertIn("Assignment binds a name to an object.", notes_prompt)
         self.assertIn("Why use a variable?", notes_prompt)
         self.assertIn("Explain variable assignment.", notes_prompt)
+        self.assertIn("https://docs.python.org/3/tutorial/", notes_prompt)
+        provider.research_grounded_text.assert_not_called()
         self.assertIn(f"{course_path}/syllabus/v1", database.read_paths)
         self.assertIn(f"{course_path}/tutorTopics/{topic_id}", database.read_paths)
         self.assertFalse(any(path.startswith("users/another-learner/") for path in database.read_paths))
@@ -217,7 +214,7 @@ class NotesSavedDataFetchTests(unittest.TestCase):
 
 
 class NotesImageProviderTests(unittest.TestCase):
-    def test_plain_text_search_research_keeps_google_citation_annotations(self):
+    def test_provider_plain_text_search_keeps_google_citation_annotations(self):
         provider = GeminiProvider()
         citation = SimpleNamespace(type="url_citation", title="Python docs", url="https://docs.python.org/3/")
         block = SimpleNamespace(type="text", text="Python lists are mutable.", annotations=[citation])
@@ -231,7 +228,7 @@ class NotesImageProviderTests(unittest.TestCase):
             provider, "_tracked", side_effect=lambda **kwargs: kwargs["invoke"](),
         ):
             result = provider.research_grounded_text(
-                "Verify a Python fact.", feature="notes_research", request_id="research-test",
+                "Verify a Python fact.", feature="provider_research_test", request_id="research-test",
             )
 
         self.assertEqual(len(result.sources), 1)
