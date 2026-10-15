@@ -148,6 +148,9 @@ def _session_record(snapshot, courses):
 
 
 def _validate_range(start_at, end_at):
+    if (not isinstance(start_at, datetime) or start_at.tzinfo is None or start_at.utcoffset() is None
+            or not isinstance(end_at, datetime) or end_at.tzinfo is None or end_at.utcoffset() is None):
+        raise HTTPException(status_code=422, detail="Calendar range boundaries must include a time zone.")
     start_utc = _utc_datetime(start_at)
     end_utc = _utc_datetime(end_at)
     if start_utc is None or end_utc is None or end_utc <= start_utc:
@@ -157,25 +160,43 @@ def _validate_range(start_at, end_at):
     return start_utc, end_utc
 
 
+def _validated_zone(value):
+    if not isinstance(value, str) or not value.strip() or len(value) > 100:
+        raise HTTPException(status_code=422, detail="Choose a valid time zone.")
+    try:
+        return ZoneInfo(value)
+    except (ZoneInfoNotFoundError, ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail="Choose a valid time zone.") from exc
+
+
+def _local_week_window(now, zone):
+    local_now = now.astimezone(zone)
+    week_start = local_now.date() - timedelta(days=local_now.weekday())
+    week_end = week_start + timedelta(days=7)
+    start_utc = datetime.combine(week_start, time.min, tzinfo=zone).astimezone(timezone.utc)
+    end_utc = datetime.combine(week_end, time.min, tzinfo=zone).astimezone(timezone.utc)
+    return week_start, start_utc, end_utc
+
+
+def _weekly_activity_counts(weekly_events, week_start, zone):
+    return [(
+        (week_start + timedelta(days=offset)).isoformat(),
+        sum(1 for completed_at in weekly_events if completed_at.astimezone(zone).date() == week_start + timedelta(days=offset)),
+    ) for offset in range(7)]
+
+
 @router.get("/overview", response_model=PlannerOverview)
 def get_planner_overview(
     startAt: datetime,
     endAt: datetime,
-    timeZone: str = Query(default="UTC", min_length=1, max_length=100),
+    timeZone: str | None = Query(default=None, min_length=1, max_length=100),
     user: dict = Depends(get_current_user),
 ):
     user_id = _user_id(user)
     start_utc, end_utc = _validate_range(startAt, endAt)
-    try:
-        zone = ZoneInfo(timeZone)
-    except ZoneInfoNotFoundError as exc:
-        raise HTTPException(status_code=422, detail="Choose a valid time zone.") from exc
+    zone = _validated_zone(timeZone) if timeZone is not None else timezone.utc
 
-    local_now = datetime.now(zone)
-    week_start = local_now.date() - timedelta(days=local_now.weekday())
-    week_end = week_start + timedelta(days=7)
-    week_start_utc = datetime.combine(week_start, time.min, tzinfo=zone).astimezone(timezone.utc)
-    week_end_utc = datetime.combine(week_end, time.min, tzinfo=zone).astimezone(timezone.utc)
+    week_start, week_start_utc, week_end_utc = _local_week_window(datetime.now(timezone.utc), zone)
 
     database = get_firestore_client()
     course_data = _user_course_data(database, user_id)
@@ -212,11 +233,10 @@ def get_planner_overview(
             if week_start_utc <= completed_at < week_end_utc:
                 weekly_events[(course_id, event_snapshot.id)] = completed_at
 
-    weekly_activity = []
-    for offset in range(7):
-        day = week_start + timedelta(days=offset)
-        count = sum(1 for completed_at in weekly_events.values() if completed_at.astimezone(zone).date() == day)
-        weekly_activity.append(WeeklyActivityDay(date=day.isoformat(), completedLessons=count))
+    weekly_activity = [
+        WeeklyActivityDay(date=day, completedLessons=count)
+        for day, count in _weekly_activity_counts(weekly_events.values(), week_start, zone)
+    ]
 
     session_snapshots = database.collection(f"users/{user_id}/studySessions").get() or []
     sessions = []

@@ -20,6 +20,8 @@ import type { CourseProgress } from "@/lib/progress";
 import {
   chooseRecommendedLesson,
   createPlannerSession,
+  dateKeyInTimeZone,
+  FALLBACK_TIME_ZONE,
   deletePlannerSession,
   fetchPlannerOverview,
   getLocalTimeZone,
@@ -37,6 +39,21 @@ import {
 } from "@/lib/study-planner";
 
 const weekdayLabels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+function useDetectedTimeZone() {
+  const [result, setResult] = useState<{ ready: boolean; value: string | null }>({ ready: false, value: null });
+  useEffect(() => {
+    const timer = window.setTimeout(() => setResult({ ready: true, value: getLocalTimeZone() }), 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+  return result;
+}
+
+function weekdayLabel(dateKey: string) {
+  const [year, month, day] = dateKey.split("-").map(Number);
+  const calendarDay = new Date(Date.UTC(year, month - 1, day, 12));
+  return new Intl.DateTimeFormat(undefined, { weekday: "narrow", timeZone: "UTC" }).format(calendarDay);
+}
 
 function displayDate(date: Date, options: Intl.DateTimeFormatOptions = { month: "long", day: "numeric", year: "numeric" }) {
   return date.toLocaleDateString(undefined, options);
@@ -64,13 +81,14 @@ function makeInitialDraft(date: Date, data: PlannerOverview | null): SessionDraf
   };
 }
 
-function sessionDraftFromRecord(session: PlannerSession): SessionDraft {
+function sessionDraftFromRecord(session: PlannerSession, timeZone: string): SessionDraft {
   const start = new Date(session.startAt);
+  const localTime = new Intl.DateTimeFormat("en-US", { timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(start);
   return {
     courseId: session.courseId,
     lessonId: session.lessonId ?? "",
-    date: localDateKey(start),
-    time: localTimeValue(start),
+    date: dateKeyInTimeZone(start, timeZone),
+    time: localTime,
     durationMinutes: session.durationMinutes,
     note: session.note,
   };
@@ -91,8 +109,10 @@ export function WeeklyLearningInsights({
 }) {
   const { user } = useAuth();
   const [reloadKey, setReloadKey] = useState(0);
-  const timeZone = getLocalTimeZone();
-  const requestKey = `${user?.uid ?? "signed-out"}:${timeZone}:${reloadKey}`;
+  const timeZoneResult = useDetectedTimeZone();
+  const timeZone = timeZoneResult.value;
+  const effectiveTimeZone = timeZone ?? FALLBACK_TIME_ZONE;
+  const requestKey = `${user?.uid ?? "signed-out"}:${effectiveTimeZone}:${reloadKey}`;
   const [result, setResult] = useState<{ userId: string; requestKey: string; value: PlannerOverview | null; error: string } | null>(null);
   const currentResult = result?.requestKey === requestKey && result.userId === user?.uid ? result : null;
   const data = currentResult?.value ?? null;
@@ -100,12 +120,12 @@ export function WeeklyLearningInsights({
   const error = currentResult?.error ?? "";
 
   useEffect(() => {
-    if (!user) return;
+    if (!user || !timeZoneResult.ready) return;
     const currentUser = user;
     const currentRequestKey = requestKey;
     let active = true;
     void currentUser.getIdToken()
-      .then((token) => fetchPlannerOverview(token, new Date(), "week", timeZone))
+      .then((token) => fetchPlannerOverview(token, new Date(), "week", effectiveTimeZone))
       .then((overview) => {
         if (active && auth.currentUser?.uid === currentUser.uid) {
           setResult({ userId: currentUser.uid, requestKey: currentRequestKey, value: overview, error: "" });
@@ -122,7 +142,7 @@ export function WeeklyLearningInsights({
         }
       });
     return () => { active = false; };
-  }, [requestKey, timeZone, user]);
+  }, [requestKey, effectiveTimeZone, timeZoneResult.ready, user]);
 
   const maxDailyCompletions = Math.max(1, ...(data?.weeklyActivity.map((day) => day.completedLessons) ?? []));
   const mostCompletedCourse = [...courses].filter((course) => course.totalLessons > 0)
@@ -148,11 +168,10 @@ export function WeeklyLearningInsights({
           <div aria-label="Daily completed lesson counts for this week" className="mt-4 grid grid-cols-7 gap-2" role="img">
             {data.weeklyActivity.map((day) => {
               const height = day.completedLessons ? Math.max(8, Math.round(day.completedLessons / maxDailyCompletions * 48)) : 3;
-              const localDay = new Date(`${day.date}T12:00:00`);
               return <div className="flex min-w-0 flex-col items-center gap-1" key={day.date}>
                 <span className="text-[0.65rem] tabular-nums text-[#68736d]">{day.completedLessons || ""}</span>
                 <span aria-hidden="true" className="flex h-12 w-full items-end justify-center rounded-t bg-[#f0f4ef]"><span className="w-4/5 rounded-t bg-[#55916a]" style={{ height }} /></span>
-                <span className="text-[0.65rem] text-[#68736d]">{localDay.toLocaleDateString(undefined, { weekday: "narrow" })}</span>
+                <span className="text-[0.65rem] text-[#68736d]">{weekdayLabel(day.date)}</span>
               </div>;
             })}
           </div>
@@ -206,8 +225,10 @@ export function StudyPlanner() {
   const [savingGoal, setSavingGoal] = useState(false);
   const [goalError, setGoalError] = useState("");
 
-  const timeZone = getLocalTimeZone();
-  const requestKey = `${user?.uid ?? "signed-out"}:${localDateKey(selectedDate)}:${view}:${timeZone}:${reloadKey}`;
+  const timeZoneResult = useDetectedTimeZone();
+  const timeZone = timeZoneResult.value;
+  const effectiveTimeZone = timeZone ?? FALLBACK_TIME_ZONE;
+  const requestKey = `${user?.uid ?? "signed-out"}:${localDateKey(selectedDate)}:${view}:${effectiveTimeZone}:${reloadKey}`;
   const currentPlannerResult = plannerResult?.requestKey === requestKey && plannerResult.userId === user?.uid ? plannerResult : null;
   const data = currentPlannerResult?.value ?? null;
   const loading = !!user && !currentPlannerResult;
@@ -222,12 +243,12 @@ export function StudyPlanner() {
   }
 
   useEffect(() => {
-    if (!user) return;
+    if (!user || !timeZoneResult.ready) return;
     const currentUser = user;
     const currentRequestKey = requestKey;
     let active = true;
     void currentUser.getIdToken()
-      .then((token) => fetchPlannerOverview(token, selectedDate, view, timeZone))
+      .then((token) => fetchPlannerOverview(token, selectedDate, view, effectiveTimeZone))
       .then((overview) => {
         if (!active || auth.currentUser?.uid !== currentUser.uid) return;
         setPlannerResult({ userId: currentUser.uid, requestKey: currentRequestKey, value: overview, error: "" });
@@ -244,7 +265,7 @@ export function StudyPlanner() {
         }
       });
     return () => { active = false; };
-  }, [requestKey, selectedDate, timeZone, user, view]);
+  }, [requestKey, selectedDate, effectiveTimeZone, timeZoneResult.ready, user, view]);
 
   function openNewSession() {
     setDraft(makeInitialDraft(selectedDate, data));
@@ -254,7 +275,7 @@ export function StudyPlanner() {
   }
 
   function openEditSession(session: PlannerSession) {
-    setDraft(sessionDraftFromRecord(session));
+    setDraft(sessionDraftFromRecord(session, effectiveTimeZone));
     setEditingSessionId(session.sessionId);
     setSessionError("");
     setDialogOpen(true);
@@ -263,7 +284,7 @@ export function StudyPlanner() {
   async function submitSession(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!user) return;
-    const validation = validateSessionDraft(draft);
+    const validation = validateSessionDraft(draft, new Date(), effectiveTimeZone);
     if (validation.error) {
       setSessionError(validation.error);
       return;
@@ -347,8 +368,8 @@ export function StudyPlanner() {
     await persistWeeklyTarget(null);
   }
 
-  const selectedSessions = (data?.sessions ?? []).filter((session) => localDateKey(new Date(session.startAt)) === selectedDateKey);
-  const selectedCompletions = (data?.completions ?? []).filter((completion) => localDateKey(new Date(completion.completedAt)) === selectedDateKey);
+  const selectedSessions = (data?.sessions ?? []).filter((session) => dateKeyInTimeZone(session.startAt, effectiveTimeZone) === selectedDateKey);
+  const selectedCompletions = (data?.completions ?? []).filter((completion) => dateKeyInTimeZone(completion.completedAt, effectiveTimeZone) === selectedDateKey);
   const weekMaximum = Math.max(1, data?.weeklyTarget ?? 0, ...(data?.weeklyActivity.map((day) => day.completedLessons) ?? []));
 
   return (
@@ -365,6 +386,7 @@ export function StudyPlanner() {
         </div>
       </header>
 
+      {timeZoneResult.ready && timeZone === null && <p className="rounded-md border border-[#eadfbd] bg-[#fff9e9] px-3 py-2 text-sm text-[#68551f]" role="status">Your browser time zone could not be detected. Dates are shown in UTC as a fallback.</p>}
       {notice && <p className="rounded-md border border-[#cddfd1] bg-[#eef6ef] px-3 py-2 text-sm text-[#31553d]" role="status">{notice}</p>}
       {error && <section className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-800" role="alert"><p>{error}</p><button className="mt-2 inline-flex items-center gap-1.5 font-semibold underline underline-offset-2" onClick={retryPlannerLoad} type="button"><RefreshCcw aria-hidden="true" size={14} />Retry</button></section>}
       {data && data.courses.length === 0 && <section className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-[#dce3db] bg-white px-4 py-3" role="status"><p className="text-sm text-[#68736d]">Create a course before scheduling a study session.</p><Link className="inline-flex min-h-9 items-center rounded-md bg-[#176b59] px-3 text-sm font-semibold text-white hover:bg-[#125644]" href="/dashboard/new">Create course</Link></section>}
@@ -379,7 +401,7 @@ export function StudyPlanner() {
                 <div className="flex items-center gap-1">
                   <button aria-label="Previous period" className="flex h-9 w-9 items-center justify-center rounded-md text-[#405b4f] hover:bg-[#f1f5f1] focus-visible:outline-2 focus-visible:outline-[#176b59]" onClick={() => setSelectedDate((current) => moveCalendarDate(current, view, -1))} type="button"><ChevronLeft aria-hidden="true" size={19} /></button>
                   <button aria-label="Next period" className="flex h-9 w-9 items-center justify-center rounded-md text-[#405b4f] hover:bg-[#f1f5f1] focus-visible:outline-2 focus-visible:outline-[#176b59]" onClick={() => setSelectedDate((current) => moveCalendarDate(current, view, 1))} type="button"><ChevronRight aria-hidden="true" size={19} /></button>
-                  <h3 className="ml-1 text-sm font-semibold text-[#19352d]">{view === "month" ? selectedDate.toLocaleDateString(undefined, { month: "long", year: "numeric" }) : view === "week" ? `${displayDate(calendarDates[0], { month: "short", day: "numeric" })} – ${displayDate(calendarDates[6], { month: "short", day: "numeric", year: "numeric" })}` : displayDate(selectedDate)}</h3>
+                  <h3 className="ml-1 text-sm font-semibold text-[#19352d]">{view === "month" ? selectedDate.toLocaleDateString(undefined, { month: "long", year: "numeric", timeZone: effectiveTimeZone }) : view === "week" ? `${displayDate(calendarDates[0], { month: "short", day: "numeric", timeZone: effectiveTimeZone })} – ${displayDate(calendarDates[6], { month: "short", day: "numeric", year: "numeric", timeZone: effectiveTimeZone })}` : displayDate(selectedDate, { weekday: "long", month: "long", day: "numeric", timeZone: effectiveTimeZone })}</h3>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <button className="rounded-md border border-[#d6dfd8] px-2.5 py-1.5 text-xs font-semibold text-[#365c4e] hover:bg-[#f2f7f3] focus-visible:outline-2 focus-visible:outline-[#176b59]" onClick={() => setSelectedDate(new Date())} type="button">Today</button>
@@ -390,14 +412,14 @@ export function StudyPlanner() {
               </div>
 
               <div className={`grid ${view === "day" ? "grid-cols-1" : "grid-cols-7"} border-b border-[#e8ede8] pb-2 text-center text-[0.68rem] font-semibold text-[#738078]`}>
-                {view === "day" ? <span>{selectedDate.toLocaleDateString(undefined, { weekday: "long" })}</span> : weekdayLabels.map((label) => <span key={label}>{label}</span>)}
+                {view === "day" ? <span>{selectedDate.toLocaleDateString(undefined, { weekday: "long", timeZone: effectiveTimeZone })}</span> : weekdayLabels.map((label) => <span key={label}>{label}</span>)}
               </div>
               <div aria-label={`${view} calendar`} className={`grid ${view === "day" ? "grid-cols-1" : "grid-cols-7"}`} role="grid">
                 {calendarDates.map((date) => {
                   const dateKey = localDateKey(date);
                   const outsideMonth = view === "month" && date.getMonth() !== selectedDate.getMonth();
-                  const daySessions = data.sessions.filter((session) => localDateKey(new Date(session.startAt)) === dateKey);
-                  const dayCompletions = data.completions.filter((completion) => localDateKey(new Date(completion.completedAt)) === dateKey);
+                    const daySessions = data.sessions.filter((session) => dateKeyInTimeZone(session.startAt, effectiveTimeZone) === dateKey);
+                    const dayCompletions = data.completions.filter((completion) => dateKeyInTimeZone(completion.completedAt, effectiveTimeZone) === dateKey);
                   const isToday = dateKey === localDateKey(new Date());
                   const isSelected = dateKey === selectedDateKey;
                   return <button aria-label={`${displayDate(date)}${daySessions.length ? `, ${daySessions.length} scheduled sessions` : ""}${dayCompletions.length ? `, ${dayCompletions.length} completed lessons` : ""}`} aria-selected={isSelected} className={`relative flex min-h-[3.4rem] flex-col items-start border-b border-r border-[#edf0ec] p-1.5 text-left transition last:border-r-0 hover:bg-[#f5f8f4] focus-visible:z-10 focus-visible:outline-2 focus-visible:outline-[#176b59] sm:min-h-[4.5rem] sm:p-2 ${outsideMonth ? "text-[#a4aea7]" : "text-[#31463b]"} ${isSelected ? "bg-[#edf5ee]" : "bg-white"}`} key={dateKey} onClick={() => setSelectedDate(date)} role="gridcell" type="button">
@@ -423,7 +445,7 @@ export function StudyPlanner() {
               <div className="flex items-start justify-between gap-3 border-b border-[#e8ede8] pb-3">
                 <div>
                   <p className="text-[0.68rem] font-bold uppercase tracking-[0.1em] text-[#c35d42]">Selected day</p>
-                  <h3 className="mt-1 text-base font-semibold text-[#19352d]" id="selected-day-heading">{displayDate(selectedDate, { weekday: "long", month: "long", day: "numeric" })}</h3>
+                  <h3 className="mt-1 text-base font-semibold text-[#19352d]" id="selected-day-heading">{displayDate(selectedDate, { weekday: "long", month: "long", day: "numeric", timeZone: effectiveTimeZone })}</h3>
                 </div>
                 <button aria-label="Schedule on selected day" className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-[#eaf3eb] text-[#176b59] hover:bg-[#deebdf] focus-visible:outline-2 focus-visible:outline-[#176b59] disabled:opacity-50" disabled={!data.courses.length} onClick={openNewSession} title="Schedule on selected day" type="button"><Plus aria-hidden="true" size={18} /></button>
               </div>
@@ -433,7 +455,7 @@ export function StudyPlanner() {
                     <div className="min-w-0">
                       <p className="text-[0.68rem] font-semibold uppercase tracking-wide text-[#3576a1]">{sessionStatusLabel(session.status)}</p>
                       <h4 className="mt-1 break-words text-sm font-semibold text-[#19352d]">{session.lessonTitle || session.courseTitle}</h4>
-                      <p className="mt-1 text-xs text-[#68736d]">{new Date(session.startAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} <span aria-hidden="true">·</span> {session.durationMinutes} min</p>
+                      <p className="mt-1 text-xs text-[#68736d]">{new Intl.DateTimeFormat(undefined, { timeZone: effectiveTimeZone, hour: "numeric", minute: "2-digit" }).format(new Date(session.startAt))} <span aria-hidden="true">·</span> {session.durationMinutes} min</p>
                       {session.lessonTitle && <p className="mt-0.5 text-xs text-[#68736d]">{session.courseTitle}</p>}
                     </div>
                     {session.status !== "completed" && <button aria-label={`Edit ${session.courseTitle} session`} className="flex h-8 w-8 items-center justify-center rounded-md text-[#617168] hover:bg-[#f1f5f1] focus-visible:outline-2 focus-visible:outline-[#176b59]" onClick={() => openEditSession(session)} title="Edit session" type="button"><Pencil aria-hidden="true" size={15} /></button>}
@@ -496,11 +518,10 @@ export function StudyPlanner() {
                 {data.weeklyActivity.map((day) => {
                   const value = day.completedLessons;
                   const height = value ? Math.max(8, Math.round(value / weekMaximum * 52)) : 3;
-                  const currentDate = new Date(`${day.date}T12:00:00`);
                   return <div className="flex min-w-0 flex-col items-center gap-1.5" key={day.date}>
                     <span className="text-[0.65rem] tabular-nums text-[#68736d]">{value || ""}</span>
                     <span aria-hidden="true" className={`flex h-14 w-full items-end justify-center rounded-t bg-[#f0f4ef] ${value ? "" : "opacity-60"}`}><span className="w-4/5 rounded-t bg-[#55916a]" style={{ height }} /></span>
-                    <span className="text-[0.65rem] text-[#68736d]">{currentDate.toLocaleDateString(undefined, { weekday: "narrow" })}</span>
+                    <span className="text-[0.65rem] text-[#68736d]">{weekdayLabel(day.date)}</span>
                   </div>;
                 })}
               </div>
@@ -555,7 +576,7 @@ export function StudyPlanner() {
               <label className="text-sm font-medium text-[#31463b]">Date
                 <input className="mt-1.5 block min-h-11 w-full rounded-md border border-[#d6dfd8] px-3 text-sm outline-none focus:border-[#176b59] focus:ring-2 focus:ring-[#176b59]/15" onChange={(event) => setDraft((current) => ({ ...current, date: event.target.value }))} required type="date" value={draft.date} />
               </label>
-              <label className="text-sm font-medium text-[#31463b]">Start time <span className="font-normal text-[#78847c]">({timeZone})</span>
+              <label className="text-sm font-medium text-[#31463b]">Start time <span className="font-normal text-[#78847c]">({effectiveTimeZone})</span>
                 <input className="mt-1.5 block min-h-11 w-full rounded-md border border-[#d6dfd8] px-3 text-sm outline-none focus:border-[#176b59] focus:ring-2 focus:ring-[#176b59]/15" onChange={(event) => setDraft((current) => ({ ...current, time: event.target.value }))} required type="time" value={draft.time} />
               </label>
             </div>

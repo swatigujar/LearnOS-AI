@@ -57,15 +57,71 @@ export type SessionDraft = {
   note: string;
 };
 
+export const FALLBACK_TIME_ZONE = "UTC";
+
 export function getLocalTimeZone() {
   try {
     const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    if (!timeZone) return "UTC";
+    if (!timeZone) return null;
     new Intl.DateTimeFormat("en-US", { timeZone });
     return timeZone;
   } catch {
-    return "UTC";
+    return null;
   }
+}
+
+export function isSupportedTimeZone(timeZone: string) {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function dateKeyInTimeZone(value: Date | string, timeZone: string) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(date.getTime())) return "";
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value ?? "";
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
+function localDateTimeToUtc(dateKey: string, timeValue: string, timeZone: string) {
+  const dateMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateKey);
+  const timeMatch = /^(\d{2}):(\d{2})$/.exec(timeValue);
+  if (!dateMatch || !timeMatch || !isSupportedTimeZone(timeZone)) return null;
+  const [, year, month, day] = dateMatch.map(Number) as unknown as [string, number, number, number];
+  const [, hour, minute] = timeMatch.map(Number) as unknown as [string, number, number];
+  const localParts = [year, month, day, hour, minute];
+  if (month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59) return null;
+  const wallTimeAsUtc = Date.UTC(year, month - 1, day, hour, minute);
+  const initial = new Date(wallTimeAsUtc);
+  if (initial.getUTCFullYear() !== year || initial.getUTCMonth() !== month - 1 || initial.getUTCDate() !== day) return null;
+
+  let candidate = wallTimeAsUtc;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+    }).formatToParts(new Date(candidate));
+    const part = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((item) => item.type === type)?.value);
+    const representedWallTime = Date.UTC(part("year"), part("month") - 1, part("day"), part("hour"), part("minute"));
+    const difference = wallTimeAsUtc - representedWallTime;
+    if (difference === 0) break;
+    candidate += difference;
+  }
+  const resolved = new Date(candidate);
+  if (dateKeyInTimeZone(resolved, timeZone) !== dateKey
+      || Number(new Intl.DateTimeFormat("en-US", { timeZone, hour: "2-digit", hourCycle: "h23" }).format(resolved)) !== localParts[3]
+      || Number(new Intl.DateTimeFormat("en-US", { timeZone, minute: "2-digit" }).format(resolved)) !== localParts[4]) return null;
+  return resolved;
 }
 
 function addDays(date: Date, days: number) {
@@ -93,11 +149,13 @@ export function visibleCalendarDates(view: CalendarView, selectedDate: Date) {
   return Array.from({ length: 42 }, (_, index) => addDays(gridStart, index));
 }
 
-export function calendarWindow(view: CalendarView, selectedDate: Date) {
+export function calendarWindow(view: CalendarView, selectedDate: Date, timeZone = getLocalTimeZone() ?? FALLBACK_TIME_ZONE) {
   const dates = visibleCalendarDates(view, selectedDate);
-  const start = dates[0];
-  const end = addDays(dates[dates.length - 1], 1);
-  return { startAt: start.toISOString(), endAt: end.toISOString() };
+  const startAt = localDateTimeToUtc(localDateKey(dates[0]), "00:00", timeZone);
+  const endDate = addDays(dates[dates.length - 1], 1);
+  const endAt = localDateTimeToUtc(localDateKey(endDate), "00:00", timeZone);
+  if (!startAt || !endAt) throw new Error("The selected calendar range is invalid in this time zone.");
+  return { startAt: startAt.toISOString(), endAt: endAt.toISOString() };
 }
 
 export function moveCalendarDate(date: Date, view: CalendarView, direction: -1 | 1) {
@@ -105,19 +163,15 @@ export function moveCalendarDate(date: Date, view: CalendarView, direction: -1 |
   return addDays(date, direction * (view === "week" ? 7 : 1));
 }
 
-export function localSessionStart(dateValue: string, timeValue: string, now = new Date()) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateValue) || !/^\d{2}:\d{2}$/.test(timeValue)) return null;
-  const [year, month, day] = dateValue.split("-").map(Number);
-  const [hour, minute] = timeValue.split(":").map(Number);
-  const start = new Date(year, month - 1, day, hour, minute, 0, 0);
-  if (start.getFullYear() !== year || start.getMonth() !== month - 1 || start.getDate() !== day
-      || start.getHours() !== hour || start.getMinutes() !== minute || start <= now) return null;
+export function localSessionStart(dateValue: string, timeValue: string, now = new Date(), timeZone = getLocalTimeZone() ?? FALLBACK_TIME_ZONE) {
+  const start = localDateTimeToUtc(dateValue, timeValue, timeZone);
+  if (!start || start <= now) return null;
   return start.toISOString();
 }
 
-export function validateSessionDraft(draft: SessionDraft, now = new Date()) {
+export function validateSessionDraft(draft: SessionDraft, now = new Date(), timeZone = getLocalTimeZone() ?? FALLBACK_TIME_ZONE) {
   if (!draft.courseId) return { error: "Choose a course.", startAt: null };
-  const startAt = localSessionStart(draft.date, draft.time, now);
+  const startAt = localSessionStart(draft.date, draft.time, now, timeZone);
   if (!startAt) return { error: "Choose a valid future date and time.", startAt: null };
   if (!Number.isInteger(draft.durationMinutes) || draft.durationMinutes < 15 || draft.durationMinutes > 240) {
     return { error: "Session duration must be between 15 and 240 minutes.", startAt: null };
@@ -159,7 +213,7 @@ async function requestPlanner<T>(token: string, path: string, method = "GET", bo
 }
 
 export async function fetchPlannerOverview(token: string, date: Date, view: CalendarView, timeZone: string) {
-  const range = calendarWindow(view, date);
+  const range = calendarWindow(view, date, timeZone);
   const query = new URLSearchParams({ ...range, timeZone });
   return requestPlanner<PlannerOverview>(token, `overview?${query.toString()}`);
 }

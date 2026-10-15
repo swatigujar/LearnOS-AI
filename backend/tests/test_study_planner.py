@@ -2,6 +2,7 @@ import unittest
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 from firebase_admin import firestore
@@ -155,6 +156,46 @@ class StudyPlannerEndpointTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 422)
         self.assertEqual(response.json()["detail"], "Choose a valid time zone.")
+
+    def test_supported_zones_use_local_monday_midnight_and_dst_week_lengths(self):
+        cases = [
+            ("Asia/Kolkata", datetime(2026, 10, 15, 12, tzinfo=timezone.utc), 168),
+            ("America/Los_Angeles", datetime(2026, 3, 8, 12, tzinfo=timezone.utc), 167),
+            ("Europe/London", datetime(2026, 3, 29, 12, tzinfo=timezone.utc), 167),
+            ("UTC", datetime(2026, 10, 15, 12, tzinfo=timezone.utc), 168),
+        ]
+        for name, now, expected_hours in cases:
+            with self.subTest(time_zone=name):
+                week_start, start_utc, end_utc = study_planner._local_week_window(now, ZoneInfo(name))
+                self.assertEqual(week_start.weekday(), 0)
+                self.assertEqual((end_utc - start_utc).total_seconds() / 3600, expected_hours)
+
+    def test_weekly_completion_date_is_bucketed_in_each_users_zone(self):
+        event = datetime(2026, 10, 12, 0, 30, tzinfo=timezone.utc)
+        cases = [
+            ("Asia/Kolkata", "2026-10-12"),
+            ("America/Los_Angeles", "2026-10-11"),
+            ("Europe/London", "2026-10-12"),
+            ("UTC", "2026-10-12"),
+        ]
+        for name, expected_date in cases:
+            with self.subTest(time_zone=name):
+                zone = ZoneInfo(name)
+                local_date = event.astimezone(zone).date()
+                week_start, _, _ = study_planner._local_week_window(event, zone)
+                activity = dict(study_planner._weekly_activity_counts([event], week_start, zone))
+                self.assertEqual(local_date.isoformat(), expected_date)
+                self.assertEqual(activity[expected_date], 1)
+                self.assertEqual(sum(activity.values()), 1)
+
+    def test_missing_time_zone_uses_explicit_utc_fallback_and_invalid_values_fail(self):
+        now = datetime.now(timezone.utc)
+        start_at = (now - timedelta(days=7)).isoformat()
+        end_at = (now + timedelta(days=14)).isoformat()
+        missing = self.client.get("/api/planner/overview", params={"startAt": start_at, "endAt": end_at})
+        invalid = self.client.get("/api/planner/overview", params={"startAt": start_at, "endAt": end_at, "timeZone": "../invalid"})
+        self.assertEqual(missing.status_code, 200)
+        self.assertEqual(invalid.status_code, 422)
 
     def test_overview_is_uid_scoped_and_contains_real_completion_events(self):
         response = self.overview()

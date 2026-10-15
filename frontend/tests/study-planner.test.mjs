@@ -3,7 +3,11 @@ import test from "node:test";
 import {
   calendarWindow,
   chooseRecommendedLesson,
+  dateKeyInTimeZone,
+  FALLBACK_TIME_ZONE,
   getLocalTimeZone,
+  isSupportedTimeZone,
+  localSessionStart,
   localDateKey,
   moveCalendarDate,
   validateSessionDraft,
@@ -53,7 +57,35 @@ test("recommendation chooses current incomplete context without treating unknown
   assert.equal(chooseRecommendedLesson(courses.slice(0, 1)), null);
 });
 
-test("local time zone resolves to a non-empty IANA zone or UTC", () => {
-  assert.equal(typeof getLocalTimeZone(), "string");
-  assert.ok(getLocalTimeZone().length > 0);
+test("same UTC timestamp is rendered on the correct local date across supported zones", () => {
+  const timestamp = "2026-10-15T00:30:00Z";
+  assert.equal(dateKeyInTimeZone(timestamp, "Asia/Kolkata"), "2026-10-15");
+  assert.equal(dateKeyInTimeZone(timestamp, "America/Los_Angeles"), "2026-10-14");
+  assert.equal(dateKeyInTimeZone(timestamp, "Europe/London"), "2026-10-15");
+  assert.equal(dateKeyInTimeZone(timestamp, "UTC"), "2026-10-15");
+});
+
+test("calendar boundaries use local midnight and preserve DST week lengths", () => {
+  const springWeek = calendarWindow("week", new Date(2026, 2, 8, 12), "America/Los_Angeles");
+  assert.equal(springWeek.startAt, "2026-03-02T08:00:00.000Z");
+  assert.equal(springWeek.endAt, "2026-03-09T07:00:00.000Z");
+  assert.equal(Date.parse(springWeek.endAt) - Date.parse(springWeek.startAt), 167 * 60 * 60 * 1000);
+  const fallWeek = calendarWindow("week", new Date(2026, 10, 1, 12), "America/Los_Angeles");
+  assert.equal(Date.parse(fallWeek.endAt) - Date.parse(fallWeek.startAt), 169 * 60 * 60 * 1000);
+});
+
+test("session wall time converts in the chosen zone and rejects DST gaps", () => {
+  const now = new Date("2026-01-01T00:00:00Z");
+  assert.equal(localSessionStart("2026-10-15", "09:00", now, "Asia/Kolkata"), "2026-10-15T03:30:00.000Z");
+  assert.equal(localSessionStart("2026-10-15", "09:00", now, "America/Los_Angeles"), "2026-10-15T16:00:00.000Z");
+  assert.equal(localSessionStart("2026-10-15", "09:00", now, "Europe/London"), "2026-10-15T08:00:00.000Z");
+  assert.equal(localSessionStart("2026-10-15", "09:00", now, "UTC"), "2026-10-15T09:00:00.000Z");
+  assert.equal(localSessionStart("2026-03-08", "02:30", now, "America/Los_Angeles"), null);
+});
+
+test("time zone detection exposes an explicit UTC fallback and validates zones", () => {
+  assert.equal(typeof getLocalTimeZone() === "string" || getLocalTimeZone() === null, true);
+  assert.equal(FALLBACK_TIME_ZONE, "UTC");
+  assert.equal(isSupportedTimeZone("Europe/London"), true);
+  assert.equal(isSupportedTimeZone("Not/A-Time-Zone"), false);
 });
