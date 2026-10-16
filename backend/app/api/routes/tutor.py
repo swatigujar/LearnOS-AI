@@ -53,6 +53,28 @@ def _busy(state):
     return bool(pending and pending["started_at"] > datetime.now(timezone.utc) - timedelta(minutes=3))
 
 
+def _record_completion_activity(state, course):
+    latest_existing = None
+    activity_keys = ("lastStudyAt", "lastStudiedAt", "lastStudyDate", "lastActivityAt", "lastActivityDate")
+    for source in (state, course):
+        if not isinstance(source, dict):
+            continue
+        for key in activity_keys:
+            value = source.get(key)
+            try:
+                parsed = value if isinstance(value, datetime) else datetime.fromisoformat(value.replace("Z", "+00:00")) if isinstance(value, str) else None
+            except ValueError:
+                parsed = None
+            if parsed is None:
+                continue
+            parsed_utc = parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+            if latest_existing is None or parsed_utc > latest_existing:
+                latest_existing = parsed_utc
+    if latest_existing is not None and latest_existing > datetime.now(timezone.utc):
+        return
+    state["lastStudyAt"] = firestore.SERVER_TIMESTAMP
+
+
 def _state(state_ref, course, syllabus, transaction=None):
     state = state_ref.get(transaction=transaction).to_dict() or _initial(course, syllabus)
     if state["syllabus_version"] != course["syllabusVersion"]:
@@ -143,6 +165,18 @@ def _prepare(transaction, context, request):
                             "updatedAt": firestore.SERVER_TIMESTAMP,
                         })
                         queue_notes = True
+                _record_completion_activity(state, course)
+                completion_ref = course_ref.collection("tutorCompletions").document(
+                    f"v{course['syllabusVersion']}-{request.topicId}"
+                )
+                transaction.create(completion_ref, {
+                    "courseId": course_ref.id,
+                    "topicId": request.topicId,
+                    "lessonTitle": topic.title,
+                    "moduleTitle": module.title,
+                    "syllabusVersion": course["syllabusVersion"],
+                    "completedAt": firestore.SERVER_TIMESTAMP,
+                })
             else:
                 needs_model = True
         elif request.action == "repeat":
