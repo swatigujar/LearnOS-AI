@@ -139,8 +139,7 @@ def _usage_values(result):
     )
 
 
-def _settle_record(database, refs, *, status, result=None, error_code=None, reserved_search_count=0,
-                   fixed_cost_usd=0.0):
+def _settle_record(database, refs, *, status, result=None, error_code=None, reserved_search_count=0):
     _, monthly_ref, request_ref = refs
     input_tokens, output_tokens, thinking_tokens, total_tokens, search_query_count = _usage_values(result)
     actual_cost = None
@@ -148,7 +147,7 @@ def _settle_record(database, refs, *, status, result=None, error_code=None, rese
     # A missing tool count is not treated as zero; retain the pre-call reserve.
     if (input_tokens is not None and output_tokens is not None and thinking_tokens is not None
             and (reserved_search_count == 0 or search_count is not None)):
-        actual_cost = estimate_cost_usd(input_tokens, output_tokens + thinking_tokens) + fixed_cost_usd
+        actual_cost = estimate_cost_usd(input_tokens, output_tokens + thinking_tokens)
         if search_count is not None:
             actual_cost += search_count * GEMINI_SEARCH_PRICE_PER_THOUSAND_USD / 1000
             actual_cost = round(actual_cost, 8)
@@ -184,7 +183,6 @@ def run_tracked_provider_call(
     max_output_tokens: int | None = None,
     reserved_search_count: int = 0,
     search_price_per_thousand_usd: float = 0.0,
-    fixed_cost_usd: float = 0.0,
 ):
     """Reserve budget before invoking Gemini, then settle from returned metadata."""
     if not request_id or len(request_id) > 160:
@@ -199,8 +197,6 @@ def run_tracked_provider_call(
     if (not isinstance(search_price_per_thousand_usd, (int, float))
             or not math.isfinite(search_price_per_thousand_usd) or search_price_per_thousand_usd < 0):
         raise UsageLimitError("Gemini search pricing is invalid; AI requests are disabled.", 503)
-    if not isinstance(fixed_cost_usd, (int, float)) or not math.isfinite(fixed_cost_usd) or fixed_cost_usd < 0:
-        raise UsageLimitError("Gemini fixed cost is invalid; AI requests are disabled.", 503)
     # UTF-8 bytes conservatively bound text input tokens. Double the output cap
     # to reserve room for thinking tokens in addition to visible response text.
     reserved_input_tokens = len(prompt_content.encode("utf-8"))
@@ -209,7 +205,7 @@ def run_tracked_provider_call(
         estimate_cost_usd(reserved_input_tokens, reserved_output_tokens)
         + reserved_search_count * search_price_per_thousand_usd / 1000,
         8,
-    ) + fixed_cost_usd
+    )
     now = datetime.now(timezone.utc)
     try:
         database = get_firestore_client()
@@ -229,7 +225,6 @@ def run_tracked_provider_call(
         "reserved_output_token_limit": output_cap,
         "reserved_estimated_cost_usd": reserved_cost,
         "reserved_search_count": reserved_search_count,
-        "reserved_fixed_cost_usd": fixed_cost_usd,
         "requested_at": firestore.SERVER_TIMESTAMP,
     }
     try:
@@ -252,13 +247,13 @@ def run_tracked_provider_call(
             code = type(exc).__name__
         try:
             _settle_record(database, refs, status="failed", error_code=code,
-                           reserved_search_count=reserved_search_count, fixed_cost_usd=fixed_cost_usd)
+                           reserved_search_count=reserved_search_count)
         except Exception as settle_error:
             logger.error("Gemini failure usage settlement failed (%s).", type(settle_error).__name__)
         raise
     try:
         _settle_record(database, refs, status="success", result=result,
-                       reserved_search_count=reserved_search_count, fixed_cost_usd=fixed_cost_usd)
+                       reserved_search_count=reserved_search_count)
     except Exception as exc:
         # Keep the full reservation in the monthly budget if usage could not be
         # recorded, and return the already-generated result to avoid a duplicate call.

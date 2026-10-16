@@ -8,13 +8,12 @@ import { doc, getDoc } from "firebase/firestore";
 import { signOut } from "firebase/auth";
 import { auth, db } from "@/lib/firebase";
 import { useAuth } from "@/lib/auth-context";
-import { NotesLibrary } from "@/components/notes-library";
 import {
   getLearningGoals,
   type LearningGoal,
 } from "@/lib/learning-data";
 
-const sections = ["Dashboard", "Practice", "Notes", "Progress / Mastery"] as const;
+const sections = ["Dashboard", "AI Tutor", "Practice", "Notes", "Progress / Mastery"] as const;
 type Section = (typeof sections)[number];
 
 export default function DashboardPage() {
@@ -181,8 +180,6 @@ export default function DashboardPage() {
                 </section>
               )}
             </div>
-          ) : section === "Notes" ? (
-            <NotesLibrary />
           ) : (
             <section className="rounded-lg border border-[#e0e2d9] bg-white p-7 sm:p-9">
               <p className="text-xs font-bold uppercase tracking-[0.16em] text-[#d16445]">Coming next</p>

@@ -1,7 +1,5 @@
 import json
 import logging
-import base64
-import binascii
 from dataclasses import dataclass
 from functools import lru_cache
 from time import monotonic
@@ -17,9 +15,6 @@ from app.core.config import (
     AI_MAX_OUTPUT_TOKENS,
     GEMINI_API_KEY,
     GEMINI_MODEL,
-    GEMINI_NOTES_IMAGE_COST_USD,
-    GEMINI_NOTES_IMAGE_MODEL,
-    GEMINI_NOTES_IMAGE_SIZE,
     GEMINI_SEARCH_PRICE_PER_THOUSAND_USD,
 )
 from app.api.schemas.syllabus import SyllabusSource
@@ -41,7 +36,6 @@ class ProviderResult:
     search_queries: list[str] | None = None
     search_query_count: int | None = None
     request_id: str | None = None
-    image: bytes | None = None
 
 
 class SyllabusAIProvider(Protocol):
@@ -95,19 +89,17 @@ class GeminiProvider:
         }
 
     def _tracked(self, *, feature, request_id, content, invoke, max_output_tokens=None,
-                 reserved_search_count=0, search_price_per_thousand_usd=0.0, fixed_cost_usd=0.0,
-                 model=None):
+                 reserved_search_count=0, search_price_per_thousand_usd=0.0):
         try:
             return run_tracked_provider_call(
                 feature=feature,
                 request_id=request_id or uuid4().hex,
-                model=model or self.model,
+                model=self.model,
                 prompt_content=content,
                 invoke=invoke,
                 max_output_tokens=max_output_tokens,
                 reserved_search_count=reserved_search_count,
                 search_price_per_thousand_usd=search_price_per_thousand_usd,
-                fixed_cost_usd=fixed_cost_usd,
             )
         except UsageLimitError as exc:
             raise AIProviderError(self.name, str(exc), exc.status_code) from exc
@@ -209,25 +201,23 @@ class GeminiProvider:
         )
         return result.usage.get("total_input_tokens") if result.usage else None
 
-    def _research(self, prompt: str, schema: dict | None, *, use_search: bool, feature: str,
+    def _research(self, prompt: str, schema: dict, *, use_search: bool, feature: str,
                   request_id: str | None) -> ProviderResult:
-        format_spec = {"type": "text", "mime_type": "application/json", "schema": schema} if schema else None
-        content_for_budget = f"{prompt}\n{json.dumps(format_spec, ensure_ascii=True)}" if format_spec else prompt
+        format_spec = {"type": "text", "mime_type": "application/json", "schema": schema}
+        content_for_budget = f"{prompt}\n{json.dumps(format_spec, ensure_ascii=True)}"
 
         def invoke():
             try:
-                request = {
-                    "model": self.model,
-                    "input": prompt,
+                interaction = self._client().interactions.create(
+                    model=self.model,
+                    input=prompt,
                     **({"tools": [{"type": "google_search"}]} if use_search else {}),
-                    "generation_config": {
+                    response_format=format_spec,
+                    generation_config={
                         "max_output_tokens": AI_MAX_OUTPUT_TOKENS,
                         "thinking_level": "low",
                     },
-                }
-                if format_spec:
-                    request["response_format"] = format_spec
-                interaction = self._client().interactions.create(**request)
+                )
             except Exception as exc:
                 status_code = getattr(exc, "status_code", None)
                 if not isinstance(status_code, int):
@@ -269,57 +259,6 @@ class GeminiProvider:
     def research_structured_direct(self, prompt: str, schema: dict, *, feature: str = "course_research",
                                    request_id: str | None = None) -> ProviderResult:
         return self._research(prompt, schema, use_search=False, feature=feature, request_id=request_id)
-
-    def research_grounded_text(self, prompt: str, *, feature: str = "notes_research",
-                               request_id: str | None = None) -> ProviderResult:
-        """Return a prose search-grounded answer so Gemini includes citation annotations."""
-        return self._research(prompt, None, use_search=True, feature=feature, request_id=request_id)
-
-    def generate_handwritten_jpeg(self, prompt: str, *, feature: str, request_id: str) -> bytes:
-        """Render validated note text as a private JPEG using the configured image model."""
-        model = GEMINI_NOTES_IMAGE_MODEL
-        if GEMINI_NOTES_IMAGE_SIZE not in ("1K", "2K", "4K"):
-            raise AIProviderError(self.name, "The configured notes image size is invalid.", 503)
-
-        def invoke():
-            try:
-                interaction = self._client().interactions.create(
-                    model=model,
-                    input=prompt,
-                    response_format={
-                        "type": "image", "mime_type": "image/jpeg", "aspect_ratio": "3:4",
-                        "image_size": GEMINI_NOTES_IMAGE_SIZE,
-                    },
-                )
-            except Exception as exc:
-                status = getattr(exc, "status_code", None)
-                if not isinstance(status, int):
-                    status = getattr(exc, "code", None)
-                logging.getLogger(__name__).error("Gemini notes image failed (%s).", type(exc).__name__)
-                raise AIProviderError(self.name, "Gemini handwritten note image generation failed.",
-                                      status if isinstance(status, int) else None) from exc
-            output = getattr(interaction, "output_image", None)
-            encoded = getattr(output, "data", None) if output is not None else None
-            if not isinstance(encoded, (str, bytes)):
-                raise AIProviderError(self.name, "Gemini returned no notes image.")
-            try:
-                data = base64.b64decode(encoded, validate=True)
-            except (binascii.Error, ValueError) as exc:
-                raise AIProviderError(self.name, "Gemini returned an invalid notes image.") from exc
-            if not data.startswith(b"\xff\xd8\xff") or len(data) > 10_000_000:
-                raise AIProviderError(self.name, "Gemini returned an invalid or oversized JPEG.")
-            usage_obj = getattr(interaction, "usage", None)
-            usage = usage_obj.model_dump(exclude_none=True) if usage_obj is not None else None
-            return ProviderResult(text="", sources=[], usage=usage,
-                                  request_id=getattr(interaction, "id", None), image=data)
-
-        result = self._tracked(
-            feature=feature, request_id=request_id, content=prompt, invoke=invoke,
-            max_output_tokens=1, fixed_cost_usd=GEMINI_NOTES_IMAGE_COST_USD, model=model,
-        )
-        if not isinstance(result.image, bytes):
-            raise AIProviderError(self.name, "Gemini returned no notes image.")
-        return result.image
 
     def test_connection(self) -> ProviderResult:
         def invoke():
