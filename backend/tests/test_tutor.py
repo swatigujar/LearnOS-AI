@@ -137,8 +137,10 @@ class TutorEndpointTests(unittest.TestCase):
         app.dependency_overrides[get_current_user] = lambda: {"uid": "authenticated-user"}
         self.database_patch = patch.object(tutor_route, "get_firestore_client", return_value=self.database)
         self.teach_patch = patch.object(tutor_route, "teach", return_value=make_reply())
+        self.notes_worker_patch = patch.object(tutor_route, "generate_topic_notes")
         self.database_patch.start()
         self.model = self.teach_patch.start()
+        self.notes_worker = self.notes_worker_patch.start()
         self.client = TestClient(app)
         self.counter = 0
 
@@ -146,6 +148,7 @@ class TutorEndpointTests(unittest.TestCase):
         self.client.close()
         self.database_patch.stop()
         self.teach_patch.stop()
+        self.notes_worker_patch.stop()
         app.dependency_overrides.clear()
 
     def state(self):
@@ -179,6 +182,12 @@ class TutorEndpointTests(unittest.TestCase):
         final = self.action("confirm", conceptIndex=1)
         self.assertEqual(final.json()["topic_status"]["module-1-topic-1"], "completed")
         self.assertEqual(final.json()["module_status"]["module-1"], "in_progress")
+        note_record = self.database.docs[self.database.course_path + "/notes/module-1-topic-1-v1"]
+        self.assertEqual(note_record["title"], "Syntax and values")
+        self.assertEqual(note_record["status"], "queued")
+        self.notes_worker.assert_called_once_with(
+            "authenticated-user", "course-123", "module-1-topic-1", 1,
+        )
         self.assertEqual(self.action("confirm_module").json()["module_status"]["module-1"], "completed")
         resumed = self.state().json()
         self.assertEqual(len(resumed["conversation"]["messages"]), 2)

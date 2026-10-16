@@ -15,6 +15,11 @@ AI_MONTHLY_ESTIMATED_COST_LIMIT_USD = float(os.getenv("AI_MONTHLY_ESTIMATED_COST
 AI_MAX_OUTPUT_TOKENS = int(os.getenv("AI_MAX_OUTPUT_TOKENS", "8192"))
 AI_TEST_ENDPOINT_ENABLED = os.getenv("AI_TEST_ENDPOINT_ENABLED", "false").lower() == "true"
 GEMINI_SEARCH_PRICE_PER_THOUSAND_USD = float(os.getenv("GEMINI_SEARCH_PRICE_PER_THOUSAND_USD", "14"))
+GEMINI_NOTES_IMAGE_MODEL = os.getenv("GEMINI_NOTES_IMAGE_MODEL", "gemini-3.1-flash-image")
+GEMINI_NOTES_IMAGE_SIZE = os.getenv("GEMINI_NOTES_IMAGE_SIZE", "2K")
+# Reserve above the published 2K image price to keep the shared monthly cap conservative.
+GEMINI_NOTES_IMAGE_COST_USD = float(os.getenv("GEMINI_NOTES_IMAGE_COST_USD", "0.18"))
+FIREBASE_STORAGE_BUCKET = os.getenv("FIREBASE_STORAGE_BUCKET")
 
 # Defaults match the existing Gemini 3.8 Flash research pricing. Set both values
 # explicitly when using another model or when the provider changes pricing.

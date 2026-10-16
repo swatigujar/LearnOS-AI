@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from firebase_admin import firestore
 from pydantic import ValidationError
 
@@ -9,6 +9,7 @@ from app.api.schemas.syllabus import GeneratedSyllabus
 from app.api.schemas.tutor import TutorAction, TutorConversation, TutorStateResponse
 from app.core.firebase import get_firestore_client
 from app.services.ai_provider import AIProviderError
+from app.services.notes import generate_topic_notes, note_document_id
 from app.services.tutor import confirm_concept, ensure_topic_available, ordered_topics, teach
 
 router = APIRouter(prefix="/api/tutor", tags=["tutor"])
@@ -95,6 +96,7 @@ def _prepare(transaction, context, request):
     _check_course(transaction, course_ref, legacy_ref, course["syllabusVersion"])
     state = _state(state_ref, course, syllabus, transaction)
     conversation = TutorConversation.model_validate(topic_ref.get(transaction=transaction).to_dict() or {}).model_dump()
+    queue_notes = False
     if request.operationId in state["operations"]:
         return None
     if _busy(state):
@@ -121,9 +123,26 @@ def _prepare(transaction, context, request):
             if module.module_id not in state["confirmed_modules"]:
                 state["confirmed_modules"].append(module.module_id)
         elif request.action == "confirm":
+            already_completed = state["topic_status"].get(request.topicId) == "completed"
             if confirm_concept(conversation, request.conceptIndex):
                 state["topic_status"][request.topicId] = "completed"
                 conversation["taught_index"] = None
+                if not already_completed:
+                    note_ref = course_ref.collection("notes").document(
+                        note_document_id(request.topicId, course["syllabusVersion"])
+                    )
+                    if not note_ref.get(transaction=transaction).exists:
+                        transaction.create(note_ref, {
+                            "courseId": request.courseId,
+                            "topicId": request.topicId,
+                            "syllabusVersion": course["syllabusVersion"],
+                            "title": topic.title,
+                            "status": "queued",
+                            "attempts": 0,
+                            "createdAt": firestore.SERVER_TIMESTAMP,
+                            "updatedAt": firestore.SERVER_TIMESTAMP,
+                        })
+                        queue_notes = True
             else:
                 needs_model = True
         elif request.action == "repeat":
@@ -144,7 +163,10 @@ def _prepare(transaction, context, request):
         state["revision"] += 1
         transaction.set(state_ref, state)
         transaction.set(topic_ref, conversation)
-        return (module, topic, conversation) if needs_model else None
+        return {
+            "tutor": (module, topic, conversation) if needs_model else None,
+            "queue_notes": queue_notes,
+        }
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
 
@@ -185,12 +207,16 @@ def get_tutor_state(courseId: str = Query(min_length=1, max_length=150, pattern=
 
 
 @router.post("/action", response_model=TutorStateResponse)
-def tutor_action(request: TutorAction, user: dict = Depends(get_current_user)):
+def tutor_action(request: TutorAction, background_tasks: BackgroundTasks,
+                 user: dict = Depends(get_current_user)):
     try:
         context = _context(request.courseId, user)
         prepared = _prepare(context[0].transaction(), context, request)
-        if prepared:
-            module, topic, conversation = prepared
+        if prepared and prepared["queue_notes"]:
+            background_tasks.add_task(generate_topic_notes, user["uid"], request.courseId, request.topicId,
+                                      context[3]["syllabusVersion"])
+        if prepared and prepared["tutor"]:
+            module, topic, conversation = prepared["tutor"]
             try:
                 reply = teach(context[4], module, topic, context[3], context[5], conversation,
                               request.action, request.message, request_id=request.operationId)
