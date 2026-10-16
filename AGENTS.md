@@ -1,4 +1,4 @@
-# LearnOS AI — Development Instructions
+# LearnOS AI — Development Instructions. 
 
 ## Project
 LearnOS AI is a personalized learning operating system.
