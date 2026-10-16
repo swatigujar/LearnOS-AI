@@ -97,7 +97,7 @@ export default function LearningWorkspacePage() {
     setDeleting(true);
     setError("");
     try {
-      await deleteLearningGoal(user.uid, goal.id);
+      await deleteLearningGoal(user.uid, goal.id, await user.getIdToken());
       router.replace("/dashboard");
     } catch (deleteError) {
       setError(deleteError instanceof Error ? deleteError.message : "Unable to delete this course.");

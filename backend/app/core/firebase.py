@@ -4,7 +4,7 @@ import firebase_admin
 from fastapi import HTTPException
 from firebase_admin import auth, firestore
 
-from app.core.config import FIREBASE_PROJECT_ID
+from app.core.config import FIREBASE_PROJECT_ID, FIREBASE_STORAGE_BUCKET
 
 logger = getLogger(__name__)
 
@@ -19,6 +19,8 @@ def get_firebase_app():
         return firebase_admin.get_app()
     except ValueError:
         options = {"projectId": FIREBASE_PROJECT_ID} if FIREBASE_PROJECT_ID else {}
+        if FIREBASE_STORAGE_BUCKET:
+            options["storageBucket"] = FIREBASE_STORAGE_BUCKET
         return firebase_admin.initialize_app(options=options)
 
 
