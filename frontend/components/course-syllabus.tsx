@@ -1,8 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
-import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useEffect, useState } from "react";
 import { BookOpen, CheckCircle2, ChevronDown, ChevronRight, ExternalLink } from "lucide-react";
 import { doc, onSnapshot } from "firebase/firestore";
 import { useAuth } from "@/lib/auth-context";
@@ -30,41 +28,16 @@ function formatElapsedTime(seconds: number) {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
-function RequestedLessonNotice({
-  lessons,
-  activeTopicId,
-  onSelect,
-}: {
-  lessons: { topic_id: string; title: string }[];
-  activeTopicId?: string;
-  onSelect: (topicId: string) => Promise<void>;
-}) {
-  const searchParams = useSearchParams();
-  const requestedTopicId = searchParams.get("topicId");
-  const requestedLessonTitle = searchParams.get("lesson");
-  const requestedLesson = lessons.find((lesson) => lesson.topic_id === requestedTopicId)
-    ?? lessons.find((lesson) => lesson.title === requestedLessonTitle);
-  if (!requestedLesson || requestedLesson.topic_id === activeTopicId) return null;
-  return <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-md border border-[#cddfd1] bg-[#f1f7f1] px-3 py-2.5" role="status">
-    <p className="min-w-0 text-sm text-[#365c4e]">Recommended lesson: <span className="font-semibold">{requestedLesson.title}</span></p>
-    <button className="min-h-9 shrink-0 rounded-md bg-[#176b59] px-3 text-xs font-semibold text-white hover:bg-[#125644] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#176b59]" onClick={() => void onSelect(requestedLesson.topic_id)} type="button">Open lesson</button>
-  </div>;
-}
-
 export function CourseSyllabus({
   courseId,
-  courseTitle,
   currentTimelineDays,
   currentStudyHoursPerDay,
   timelineUpdated = false,
-  tutorOnly = false,
 }: {
   courseId: string;
-  courseTitle: string;
   currentTimelineDays: number | null;
   currentStudyHoursPerDay: number | null;
   timelineUpdated?: boolean;
-  tutorOnly?: boolean;
 }) {
   const { user } = useAuth();
   const [status, setStatus] = useState<string>("");
@@ -172,19 +145,6 @@ export function CourseSyllabus({
   const activeModule = syllabus?.modules.find((module) => module.module_id === selectedLesson?.moduleId);
   const moduleReady = !!activeModule && tutor.state?.module_status[activeModule.module_id] !== "completed"
     && activeModule.topics.every((topic) => tutor.state?.topic_status[topic.topic_id] === "completed");
-  const tutorReadiness = tutorOnly && !loading && (
-    error
-      ? { title: "Course data could not be loaded", message: "Check your course access and Firebase connection, then reopen the course workspace." }
-      : status === "generating"
-        ? { title: "Syllabus generation is in progress", message: "The tutor will be available after the saved syllabus is ready." }
-        : status === "failed"
-          ? { title: "Syllabus generation did not finish", message: "Open the course workspace to review the status and retry generation when you are ready." }
-          : status !== "ready"
-            ? { title: "A saved syllabus is required", message: "Open the course workspace to generate a syllabus before using its tutor." }
-            : !syllabus
-              ? { title: "The saved syllabus is unavailable", message: "Open the course workspace to check the saved syllabus and course access." }
-              : null
-  );
 
   function canSelect(topicId: string) {
     return lessons.some((topic) => topic.topic_id === topicId);
@@ -194,27 +154,17 @@ export function CourseSyllabus({
     if (await tutor.perform("select", topicId)) setExpandedTopics((current) => ({ ...current, [topicId]: true }));
   }
 
-
   return (
-    <div className={tutorOnly ? "min-w-0" : "mt-5 grid min-w-0 overflow-hidden rounded-xl border border-[#dce3db] bg-white shadow-sm lg:grid-cols-[minmax(0,0.92fr)_minmax(22rem,1.08fr)]"}>
-    {tutorReadiness && <section className="mb-4 rounded-md border border-[#eadfc8] bg-[#fbf8f1] p-4" role={error ? "alert" : "status"}>
-      <h3 className="text-sm font-semibold text-[#1b302b]">{tutorReadiness.title}</h3>
-      <p className="mt-1 text-sm leading-6 text-[#586761]">{tutorReadiness.message}</p>
-      <Link className="mt-2 inline-block text-sm font-semibold text-[#1b6657] underline underline-offset-4 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1b6657]" href={`/dashboard/courses/${courseId}`}>Open course workspace</Link>
-    </section>}
-    <section className="min-w-0 px-4 py-5 sm:px-6 lg:max-h-[calc(100dvh-10rem)] lg:overflow-y-auto lg:border-r lg:border-[#e6ebe5]" aria-labelledby="syllabus-heading" hidden={tutorOnly}>
+    <div className="mt-6 grid min-w-0 border-y border-[#e0e2d9] bg-white lg:grid-cols-[minmax(0,2.2fr)_minmax(0,2.8fr)]">
+    <section className="min-w-0 px-4 py-6 sm:px-6 lg:border-r lg:border-[#e0e2d9]" aria-labelledby="syllabus-heading">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <p className="text-[0.68rem] font-bold uppercase tracking-[0.12em] text-[#c35d42]">Course outline</p>
-          <h2 className="mt-1 flex items-center gap-2 text-lg font-semibold tracking-tight text-[#19352d]" id="syllabus-heading"><BookOpen aria-hidden="true" size={17} />Learning path</h2>
-        </div>
+        <h2 className="flex items-center gap-2 text-base font-semibold" id="syllabus-heading"><BookOpen aria-hidden="true" size={18} />Learning path</h2>
         {!loading && status !== "ready" && (
           <button className="rounded-md bg-[#1b302b] px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-60" disabled={generating} onClick={generate} type="button">
             {generating ? "Generating syllabus..." : status === "failed" ? "Retry generation" : "Generate syllabus"}
           </button>
         )}
       </div>
-      <Suspense fallback={null}><RequestedLessonNotice activeTopicId={tutor.state?.active_topic_id} lessons={lessons} onSelect={selectTopic} /></Suspense>
       {loading && <p className="mt-3 text-sm text-[#68736d]">Loading syllabus...</p>}
       {generating && <div className="mt-3 rounded-md border border-[#e0e2d9] bg-[#f6f5ef] px-3 py-2.5 text-sm text-[#586761]">
         <p role="status">{status === "generating" ? "Syllabus generation is in progress. This can take a couple of minutes." : "Waiting for the syllabus request to finish."}</p>
@@ -225,21 +175,24 @@ export function CourseSyllabus({
       {status === "ready" && syllabus && (
         <div className="mt-5 space-y-5 break-words text-sm leading-6">
           {timelineDiffersFromSavedPlan && <p className="rounded-md border border-[#e0e2d9] bg-[#f6f5ef] px-3 py-2.5 text-sm text-[#586761]" role="status">Your timeline settings have changed. This saved syllabus may reflect the earlier plan; timeline edits do not revise it automatically.</p>}
-          <div className="space-y-2.5">
-            <h3 className="whitespace-pre-wrap text-base font-semibold leading-6 text-[#19352d]">{syllabus.overview}</h3>
-            <div className="border-l-2 border-[#d16a4c] pl-3">
-              <p className="text-[0.68rem] font-bold uppercase tracking-[0.1em] text-[#68776e]">Learning objective</p>
-              <p className="mt-1 max-w-prose text-sm leading-5 text-[#52645b]">{syllabus.objective}</p>
+          <div className="space-y-3">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wide text-[#68736d]">Course overview</p>
+              <h3 className="mt-1 whitespace-pre-wrap text-xl font-semibold leading-7 text-[#1b302b]">{syllabus.overview}</h3>
             </div>
-            <p className="text-xs text-[#68776e]">{syllabus.duration_days} days <span aria-hidden="true">·</span> {syllabus.total_study_hours} study hours</p>
+            <div className="rounded-md border border-[#e0e2d9] bg-[#f6f8f5] p-3 sm:p-4">
+              <h4 className="text-sm font-semibold text-[#1b302b]">Learning objective</h4>
+              <p className="mt-1.5 max-w-prose text-sm leading-6 text-[#586761]">{syllabus.objective}</p>
+            </div>
+            <p className="mt-2 text-[#68736d]">{syllabus.duration_days} days · {syllabus.total_study_hours} study hours</p>
           </div>
-          <div className="border-y border-[#e6ebe5] py-3">
+          <div className="border-y border-[#e0e2d9] py-3">
             <div className="flex flex-wrap justify-between gap-2 text-xs"><span className="font-semibold">Progress</span><span className="text-[#68736d]">{tutor.loading ? "Loading..." : `${completedTopics}/${lessons.length} topics confirmed`}</span></div>
             <progress aria-label="Confirmed topic progress" className="mt-2 h-2 w-full accent-[#1b6657]" max={100} value={progress} />
             <p className="mt-2 text-xs text-[#68736d]">{syllabus.modules.length} modules · {progress}% confirmed</p>
           </div>
           {syllabus.prerequisites.length > 0 && <details><summary className="cursor-pointer font-semibold focus-visible:outline-2 focus-visible:outline-[#1b6657]">Prerequisites</summary><ul className="mt-2 list-disc space-y-1 pl-5">{syllabus.prerequisites.map((prerequisite, index) => <li key={index}>{prerequisite}</li>)}</ul></details>}
-          <ol className="divide-y divide-[#e6ebe5]">
+          <ol className="divide-y divide-[#e0e2d9]">
             {syllabus.modules.map((module, index) => (
               <li className="py-3" key={module.module_id}>
                 <h3>
@@ -297,7 +250,7 @@ export function CourseSyllabus({
         </div>
       )}
     </section>
-    <AiTutor controller={tutor} courseTitle={courseTitle} key={selectedLesson?.topic_id ?? courseId} lesson={selectedLesson} messageOnly={tutorOnly} moduleReady={moduleReady} nextTopicId={nextLesson && canSelect(nextLesson.topic_id) ? nextLesson.topic_id : undefined} />
+    <AiTutor controller={tutor} key={selectedLesson?.topic_id ?? courseId} lesson={selectedLesson} moduleReady={moduleReady} nextTopicId={nextLesson && canSelect(nextLesson.topic_id) ? nextLesson.topic_id : undefined} />
     </div>
   );
 }

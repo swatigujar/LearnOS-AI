@@ -2,8 +2,6 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import JSONResponse
 from app.api.routes.ai import router as ai_router
-from app.api.routes.progress import router as progress_router
-from app.api.routes.study_planner import router as study_planner_router
 from app.api.routes.syllabus import router as syllabus_router
 from app.api.routes.tutor import router as tutor_router
 from app.api.routes.mock_test import router as mock_test_router
@@ -11,8 +9,6 @@ from app.api.routes.mock_test import router as mock_test_router
 app = FastAPI(title="LearnOS AI API")
 app.include_router(syllabus_router)
 app.include_router(ai_router)
-app.include_router(progress_router)
-app.include_router(study_planner_router)
 app.include_router(tutor_router)
 app.include_router(mock_test_router)
 
