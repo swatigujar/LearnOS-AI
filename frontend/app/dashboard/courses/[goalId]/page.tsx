@@ -149,10 +149,16 @@ export default function LearningWorkspacePage() {
             </button>
           </div>
         </div>
-        <section className="mt-6 border-b border-[#e0e2d9] py-5">
-          <p className="text-xs font-bold uppercase tracking-wide text-[#d16445]">Learning workspace</p>
-          <h1 className="mt-2 break-words text-2xl font-semibold">{goal.courseName}</h1>
-          <p className="mt-2 max-w-3xl break-words text-sm leading-6 text-[#68736d]">{goal.goalText}</p>
+        <section className="mt-5 flex flex-wrap items-end justify-between gap-4 border-b border-[#dce3db] pb-5">
+          <div className="min-w-0 flex-1">
+            <p className="text-xs font-bold uppercase tracking-[0.12em] text-[#c35d42]">Learning workspace</p>
+            <h1 className="mt-1.5 break-words text-2xl font-semibold tracking-tight text-[#19352d]">{goal.courseName}</h1>
+            <p className="mt-1.5 max-w-3xl break-words text-sm leading-6 text-[#65736b]">{goal.goalText}</p>
+          </div>
+          <div className="flex shrink-0 flex-wrap gap-2 text-xs font-medium text-[#50655b]">
+            {goal.skillLevel && <span className="rounded-md border border-[#dce3db] bg-white px-2.5 py-1.5 capitalize">{goal.skillLevel}</span>}
+            {goal.studyHoursPerDay && <span className="rounded-md border border-[#dce3db] bg-white px-2.5 py-1.5">{goal.studyHoursPerDay} h / day</span>}
+          </div>
         </section>
         <details className="mt-4 border-b border-[#e0e2d9] pb-4" open={editingTimeline}>
           <summary className="cursor-pointer text-sm font-semibold focus-visible:outline-2 focus-visible:outline-[#1b6657]">Course settings</summary>
@@ -204,6 +210,7 @@ export default function LearningWorkspacePage() {
         </details>
         <CourseSyllabus
           courseId={goal.id}
+          courseTitle={goal.courseName}
           currentStudyHoursPerDay={goal.studyHoursPerDay ?? null}
           currentTimelineDays={currentTimelineDays}
           key={goal.id}
