@@ -250,7 +250,7 @@ export function CourseSyllabus({
         </div>
       )}
     </section>
-    <AiTutor controller={tutor} key={selectedLesson?.topic_id ?? courseId} lesson={selectedLesson} moduleReady={moduleReady} nextTopicId={nextLesson && canSelect(nextLesson.topic_id) ? nextLesson.topic_id : undefined} />
+    <AiTutor courseId={courseId} controller={tutor} lesson={selectedLesson} moduleReady={moduleReady} nextTopicId={nextLesson && canSelect(nextLesson.topic_id) ? nextLesson.topic_id : undefined} />
     </div>
   );
 }

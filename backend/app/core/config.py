@@ -10,6 +10,9 @@ _backend_env = dotenv_values(BACKEND_ROOT / ".env")
 
 GEMINI_API_KEY = _backend_env.get("GEMINI_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", os.getenv("AI_MODEL", "gemini-3.8-flash"))
+GEMINI_LIVE_ENABLED = os.getenv("GEMINI_LIVE_ENABLED", "true").lower() == "true"
+GEMINI_LIVE_MODEL = os.getenv("GEMINI_LIVE_MODEL", "gemini-3.8-live")
+GEMINI_LIVE_SESSION_COST_RESERVE_USD = float(os.getenv("GEMINI_LIVE_SESSION_COST_RESERVE_USD", "2.00"))
 AI_DAILY_REQUEST_LIMIT = int(os.getenv("AI_DAILY_REQUEST_LIMIT", "200"))
 AI_MONTHLY_ESTIMATED_COST_LIMIT_USD = float(os.getenv("AI_MONTHLY_ESTIMATED_COST_LIMIT_USD", "25"))
 AI_MAX_OUTPUT_TOKENS = int(os.getenv("AI_MAX_OUTPUT_TOKENS", "8192"))

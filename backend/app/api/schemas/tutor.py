@@ -50,6 +50,12 @@ class TutorReply(BaseModel):
         return self
 
 
+class GeneratedTutorReply(TutorReply):
+    explanation: str = Field(min_length=1, max_length=1200)
+    example: str = Field(min_length=1, max_length=600)
+    check_question: str = Field(min_length=1, max_length=250)
+
+
 class TutorAction(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -75,12 +81,36 @@ class TutorMessage(BaseModel):
     role: Literal["user", "assistant"]
     text: str = Field(default="", max_length=2000)
     reply: TutorReply | None = None
+    channel: Literal["chat", "voice"] = "chat"
 
     @model_validator(mode="after")
     def validate_reply(self):
-        if self.role == "assistant" and self.reply is None:
-            raise ValueError("Assistant messages require a validated reply.")
+        if self.role == "assistant" and self.reply is None and not self.text.strip():
+            raise ValueError("Assistant messages require validated reply content.")
         return self
+
+
+class TutorLiveSessionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    courseId: str = Field(min_length=1, max_length=150, pattern=r"^[^/]+$")
+    topicId: str = Field(pattern=r"^module-\d+-topic-\d+$")
+
+
+class TutorLiveTurn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: Literal["user", "assistant"]
+    text: str = Field(min_length=1, max_length=2000)
+
+
+class TutorLiveTranscriptRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    courseId: str = Field(min_length=1, max_length=150, pattern=r"^[^/]+$")
+    topicId: str = Field(pattern=r"^module-\d+-topic-\d+$")
+    operationId: str = Field(pattern=r"^[a-zA-Z0-9-]{16,64}$")
+    turns: list[TutorLiveTurn] = Field(min_length=1, max_length=2)
 
 
 class TutorConversation(BaseModel):
@@ -88,6 +118,7 @@ class TutorConversation(BaseModel):
     concepts: list[str] = Field(default_factory=list, max_length=8)
     concept_index: int = Field(default=0, ge=0, le=7)
     taught_index: int | None = Field(default=None, ge=0, le=7)
+    answered_index: int | None = Field(default=None, ge=0, le=7)
     messages: list[TutorMessage] = Field(default_factory=list, max_length=20)
 
 

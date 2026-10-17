@@ -33,7 +33,8 @@ export type TutorState = {
     concepts: string[];
     concept_index: number;
     taught_index: number | null;
-    messages: { role: "user" | "assistant"; text: string; reply: TutorReply | null }[];
+    answered_index: number | null;
+    messages: { role: "user" | "assistant"; text: string; reply: TutorReply | null; channel: "chat" | "voice" }[];
   };
   can_confirm: boolean;
 };
@@ -79,6 +80,11 @@ export function useTutor(courseId: string, enabled: boolean) {
     finally { setLoading(false); }
   }
 
+  function acceptSavedState(saved: TutorState) {
+    setState(saved);
+    setError("");
+  }
+
   async function perform(action: TutorAction, topicId?: string, message = "") {
     if (!user || !enabled || !state || inFlight.current || state.busy) return false;
     inFlight.current = true;
@@ -103,5 +109,5 @@ export function useTutor(courseId: string, enabled: boolean) {
     }
   }
 
-  return { state, loading, busy: busy || !!state?.busy, error, perform, reload };
+  return { state, loading, busy: busy || !!state?.busy, error, perform, reload, acceptSavedState };
 }
