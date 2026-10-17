@@ -26,14 +26,14 @@ or settle the browser's later audio usage. Google bills Live usage from audio
 and the growing conversation context, so actual charges may differ from the
 reservation. Review this reserve when changing models or usage limits.
 
-If live startup returns HTTP 429 with a monthly estimated-cost limit message,
-the existing monthly total plus the session reserve exceeds
-`AI_MONTHLY_ESTIMATED_COST_LIMIT_USD` (default `$25`). This is LearnOS's shared
-budget guard, not a Gemini outage. To allow more usage, explicitly increase
-`AI_MONTHLY_ESTIMATED_COST_LIMIT_USD` in the backend `.env` to an approved budget
-and restart the backend, or wait until the next UTC calendar month. Do not
-delete usage records or lower the session reserve merely to bypass the cap.
-Chat also uses the shared budget and may be blocked when it is exhausted.
+Daily request and monthly estimated-cost cap enforcement is currently commented
+out in `backend/app/services/ai_usage.py` at the owner's request. Usage records,
+session reservations, token logging, and duplicate-request protection remain
+active, but `AI_DAILY_REQUEST_LIMIT` and `AI_MONTHLY_ESTIMATED_COST_LIMIT_USD`
+do not block calls. LearnOS will not stop spending at these configured caps.
+Gemini billing and provider quotas still apply. Restoring enforcement requires
+uncommenting the cap checks and their configuration validation; no usage records
+have been deleted or reset. Output-token limits and manual Retry are unchanged.
 
 Restart the backend after updating it. Deploy the updated Firestore rules to
 the existing project only when ready; this implementation does not deploy them

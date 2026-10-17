@@ -186,21 +186,33 @@ class AIUsageLimitTests(unittest.TestCase):
             self.call("operation-duplicate", invoke)
         invoke.assert_called_once()
 
-    def test_daily_limit_blocks_before_provider_call(self):
+    def test_disabled_daily_limit_allows_calls_and_keeps_counting(self):
         invoke = Mock(return_value=SimpleNamespace(usage=None, request_id=None))
         with patch.object(ai_usage, "AI_DAILY_REQUEST_LIMIT", 1):
             self.call("daily-1", invoke)
-            with self.assertRaisesRegex(ai_usage.UsageLimitError, "daily"):
-                self.call("daily-2", invoke)
-        invoke.assert_called_once()
+            self.call("daily-2", invoke)
+        self.assertEqual(invoke.call_count, 2)
+        daily = next(value for path, value in self.database.docs.items() if "/daily/" in path)
+        self.assertEqual(daily["request_count"], 2)
 
-    def test_monthly_estimated_cost_limit_blocks_before_provider_call(self):
+    def test_disabled_monthly_limit_allows_calls_and_keeps_accounting(self):
         invoke = Mock(return_value=SimpleNamespace(usage=None, request_id=None))
         with patch.object(ai_usage, "AI_MONTHLY_ESTIMATED_COST_LIMIT_USD", 0.00001):
-            with self.assertRaisesRegex(ai_usage.UsageLimitError, "monthly"):
-                self.call("month-1", invoke)
-        invoke.assert_not_called()
-        self.assertEqual(self.database.docs, {})
+            self.call("month-1", invoke)
+            self.call("month-2", invoke)
+        self.assertEqual(invoke.call_count, 2)
+        month = next(value for path, value in self.database.docs.items() if "/monthly/" in path)
+        records = [value for path, value in self.database.docs.items() if "/requests/" in path]
+        self.assertGreater(month["reserved_estimated_cost_usd"], 0.00001)
+        self.assertEqual(month["reserved_estimated_cost_usd"],
+                         round(sum(record["reserved_estimated_cost_usd"] for record in records), 8))
+
+    def test_disabled_caps_do_not_require_positive_limits(self):
+        invoke = Mock(return_value=SimpleNamespace(usage=None, request_id=None))
+        with patch.object(ai_usage, "AI_DAILY_REQUEST_LIMIT", 0), \
+                patch.object(ai_usage, "AI_MONTHLY_ESTIMATED_COST_LIMIT_USD", 0):
+            self.call("disabled-caps", invoke)
+        invoke.assert_called_once()
 
     def test_missing_usage_is_recorded_as_unknown_and_reservation_is_retained(self):
         result = SimpleNamespace(usage=None, request_id="provider-response-unknown")
