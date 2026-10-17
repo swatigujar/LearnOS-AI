@@ -1,0 +1,74 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Current Changes — Gemini Usage Limits</title>
+  <style>
+    :root { color-scheme: light; --ink:#172033; --muted:#5c667a; --line:#dce2eb; --blue:#2457c5; --pale:#eef3ff; --green:#137547; --amber:#875c00; }
+    * { box-sizing:border-box }
+    body { margin:0; background:#f5f7fb; color:var(--ink); font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif }
+    main { max-width:900px; margin:48px auto; padding:0 24px 48px }
+    header { padding:30px; border-radius:18px; background:#fff; border:1px solid var(--line); box-shadow:0 8px 28px #1c2b4410 }
+    .eyebrow { margin:0 0 8px; color:var(--blue); font-weight:700; letter-spacing:.08em; text-transform:uppercase; font-size:.78rem }
+    h1 { margin:0; font-size:clamp(1.8rem,4vw,2.5rem); line-height:1.2 }
+    header p:last-child { margin-bottom:0; color:var(--muted) }
+    section { margin-top:22px; padding:24px 28px; border:1px solid var(--line); border-radius:16px; background:#fff }
+    h2 { margin:0 0 12px; font-size:1.22rem }
+    ul { margin:8px 0 0; padding-left:22px }
+    li+li { margin-top:8px }
+    code { padding:2px 6px; border-radius:5px; background:#f0f2f6; font-size:.9em }
+    .badge { display:inline-block; margin:3px 6px 3px 0; padding:3px 10px; border-radius:999px; background:var(--pale); color:var(--blue); font-size:.84rem; font-weight:650 }
+    .note { border-left:4px solid var(--green); background:#f5fbf7 }
+    .limits { color:var(--amber) }
+    footer { padding:18px 4px; color:var(--muted); font-size:.9rem }
+    @media(max-width:600px) { main{margin:20px auto;padding:0 14px 28px} header,section{padding:21px} }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <p class="eyebrow">Change markup</p>
+      <h1>Gemini AI usage limits</h1>
+      <p>Current workspace change summary for <code>backend/app/services/ai_usage.py</code>.</p>
+      <span class="badge">Daily request cap</span>
+      <span class="badge">Monthly cost cap</span>
+      <span class="badge">Error source labels</span>
+    </header>
+
+    <section>
+      <h2>What changed</h2>
+      <ul>
+        <li>Usage-limit errors now carry a <code>source</code> identifier, defaulting to <code>application_limit</code>.</li>
+        <li>Configuration, usage-data, usage-store, and duplicate-request failures are tagged with distinct source values.</li>
+        <li>The daily request limit is enforced before a provider call. Reaching it raises a limit error tagged <code>daily_request_limit</code>.</li>
+        <li>The monthly reserved estimated-cost limit is enforced before a provider call. Exceeding it raises a limit error tagged <code>monthly_cost_limit</code>.</li>
+        <li>Invalid or non-positive daily and monthly limit settings disable AI requests with a configuration error.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Request flow</h2>
+      <ol>
+        <li>Validate the request ID, limits, token cap, pricing, and research-cost inputs.</li>
+        <li>Estimate and reserve usage against the daily request and monthly cost records.</li>
+        <li>Block requests that exceed either configured cap or duplicate an already submitted request.</li>
+        <li>Call the provider and settle the reservation from returned usage metadata.</li>
+      </ol>
+    </section>
+
+    <section class="note">
+      <h2>Behavioral effect</h2>
+      <p>Daily and monthly budget checks that were commented out are active again. Requests can be rejected before Gemini is called when a configured cap has been reached. Error source labels also make the reason for a rejection easier to identify programmatically.</p>
+    </section>
+
+    <section>
+      <h2>Change scope</h2>
+      <p>This markup documents only the current change captured in <code>backend/usage-diff.txt</code>. The change affects Gemini usage reservation and error classification in the backend.</p>
+      <p class="limits"><strong>Verification:</strong> This is a documentation artifact; no tests or runtime checks were run.</p>
+    </section>
+
+    <footer>Generated from the current workspace change snapshot.</footer>
+  </main>
+</body>
+</html>
