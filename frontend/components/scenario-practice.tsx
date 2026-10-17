@@ -1,10 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/lib/auth-context";
+import { selectScenarioCourse, type ScenarioCourseSelection } from "@/lib/scenario-practice";
 import { GeneratedPracticeSession, type GeneratedSession } from "@/components/generated-practice-session";
 
-type Topic = { courseId: string; courseTitle: string; moduleTitle: string; topicId: string; title: string; syllabusVersion: number };
+type Course = { courseId: string; title: string; syllabusStatus: "ready" | "not_generated" | "generating" | "failed" | "unavailable" };
+type Topic = { topicId: string; title: string; moduleTitle: string; syllabusVersion: number };
 type Attempt = { attemptId: string; courseTitle: string; topicTitle: string; difficulty: string; completedAt: string | null; mode: string; category: string | null };
 type LegacyReview = { mode: "scenario"; title: string; category: string; response: string; referenceAnswer: string; explanation: string; checklist: { id: string; label: string; selected: boolean }[]; suggestedNextSteps: string[]; forRevision: boolean };
 type GeneratedReview = { mode: "scenario"; total: number; scoreable: number; correct: number; incorrect: number; unanswered: number; percentage: number | null; questions: { questionId: string; prompt: string; scenarioTitle?: string | null; scenarioContext?: string | null; scenarioTask?: string | null; selectedAnswer: string | number | null; expectedAnswer: string; rubric: string[]; explanation: string; suggestedNextSteps: string[] }[] };
@@ -12,14 +15,26 @@ type ScenarioReview = LegacyReview | GeneratedReview;
 
 async function requestJson<T>(response: Response): Promise<T> {
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Practice is unavailable. Please try again.");
+  if (!response.ok) {
+    if (response.status === 404) throw new Error("The requested course information is unavailable. Refresh and try again.");
+    if (response.status >= 500) throw new Error("Practice is temporarily unavailable. Please retry.");
+    throw new Error(typeof data.detail === "string" ? data.detail : "Practice is unavailable. Please try again.");
+  }
   return data as T;
 }
 
 export function ScenarioPractice() {
   const { user } = useAuth();
+  return <ScenarioPracticeForUser key={user?.uid ?? "signed-out"} user={user} />;
+}
+
+function ScenarioPracticeForUser({ user }: { user: NonNullable<ReturnType<typeof useAuth>["user"]> | null }) {
+  const [courses, setCourses] = useState<Course[]>([]);
+  const [selection, setSelection] = useState<ScenarioCourseSelection>(() => selectScenarioCourse(""));
   const [topics, setTopics] = useState<Topic[]>([]);
-  const [selectedKey, setSelectedKey] = useState("");
+  const [topicsLoading, setTopicsLoading] = useState(false);
+  const [topicError, setTopicError] = useState("");
+  const [reloadTopics, setReloadTopics] = useState(0);
   const [difficulty, setDifficulty] = useState("Medium");
   const [count, setCount] = useState(3);
   const [session, setSession] = useState<GeneratedSession | null>(null);
@@ -42,27 +57,48 @@ export function ScenarioPractice() {
       const data = await fetchAsUser<{ attempts: Attempt[] }>("/api/practice?action=attempts");
       setAttempts(data.attempts.filter((item) => item.mode === "scenario").slice(0, 10));
       setHistoryError("");
-    } catch (historyLoadError) { setHistoryError(historyLoadError instanceof Error ? historyLoadError.message : "Practice history could not be loaded."); }
+    } catch (historyLoadError) {
+      setHistoryError(historyLoadError instanceof Error ? historyLoadError.message : "Practice history could not be loaded.");
+    }
   }, [fetchAsUser, user]);
 
   const load = useCallback(async () => {
     if (!user) { setLoading(false); return; }
     setLoading(true); setError("");
     try {
-      const [catalog] = await Promise.all([fetchAsUser<{ topics: Topic[] }>("/api/practice?action=courses"), refreshHistory()]);
-      setTopics(catalog.topics);
-      setSelectedKey((old) => catalog.topics.some((item) => `${item.courseId}:${item.topicId}` === old) ? old : catalog.topics[0] ? `${catalog.topics[0].courseId}:${catalog.topics[0].topicId}` : "");
-    } catch (loadError) { setError(loadError instanceof Error ? loadError.message : "Courses and practice history could not be loaded."); }
-    finally { setLoading(false); }
+      const catalog = await fetchAsUser<{ courses: Course[] }>("/api/practice?action=courseCatalog");
+      setCourses(catalog.courses);
+      await refreshHistory();
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Your courses could not be loaded.");
+    } finally { setLoading(false); }
   }, [fetchAsUser, refreshHistory, user]);
   useEffect(() => { const timer = window.setTimeout(() => { void load(); }, 0); return () => window.clearTimeout(timer); }, [load]);
 
-  const selected = topics.find((item) => `${item.courseId}:${item.topicId}` === selectedKey);
+  const selectedCourse = courses.find((course) => course.courseId === selection.courseId);
+  useEffect(() => {
+    if (!user || !selectedCourse || selectedCourse.syllabusStatus !== "ready") {
+      return;
+    }
+    let active = true;
+    void Promise.resolve().then(() => {
+      if (active) setTopicsLoading(true);
+      return fetchAsUser<{ topics: Topic[] }>(`/api/practice?action=courseTopics&courseId=${encodeURIComponent(selectedCourse.courseId)}`);
+    })
+      .then((data) => { if (active) setTopics(data.topics); })
+      .catch((loadError: unknown) => { if (active) setTopicError(loadError instanceof Error ? loadError.message : "Topics could not be loaded."); })
+      .finally(() => { if (active) setTopicsLoading(false); });
+    return () => { active = false; };
+  }, [fetchAsUser, reloadTopics, selectedCourse, user]);
+
+  const visibleTopics = useMemo(() => selectedCourse?.syllabusStatus === "ready" ? topics : [], [selectedCourse, topics]);
+  const selectedTopic = visibleTopics.find((topic) => topic.topicId === selection.topicId);
+
   const generate = async () => {
-    if (!selected || busy) return;
+    if (!selectedCourse || !selectedTopic || busy) return;
     setBusy(true); setError(""); setReview(null);
     try {
-      const data = await fetchAsUser<GeneratedSession>("/api/practice", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "generate", mode: "scenario", courseId: selected.courseId, topicId: selected.topicId, syllabusVersion: selected.syllabusVersion, difficulty, questionCount: count, questionFormat: "short_answer" }) });
+      const data = await fetchAsUser<GeneratedSession>("/api/practice", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "generate", mode: "scenario", courseId: selectedCourse.courseId, topicId: selectedTopic.topicId, syllabusVersion: selectedTopic.syllabusVersion, difficulty, questionCount: count, questionFormat: "short_answer" }) });
       setSession(data);
     } catch (generationError) { setError(generationError instanceof Error ? generationError.message : "Scenario set could not be prepared."); }
     finally { setBusy(false); }
@@ -76,20 +112,74 @@ export function ScenarioPractice() {
     } catch (reviewError) { setError(reviewError instanceof Error ? reviewError.message : "Attempt review is unavailable."); }
   };
 
-  if (session) return <div className="space-y-5"><GeneratedPracticeSession session={session} onExit={() => setSession(null)} onAttemptSaved={refreshHistory}/><ScenarioHistory attempts={attempts} error={historyError} onReview={(id) => void reviewAttempt(id)} onRefresh={() => void refreshHistory()}/></div>;
+  if (session) return <div className="space-y-4"><GeneratedPracticeSession session={session} onExit={() => setSession(null)} onAttemptSaved={refreshHistory}/><ScenarioHistory attempts={attempts} error={historyError} onReview={(id) => void reviewAttempt(id)} onRefresh={() => void refreshHistory()}/></div>;
 
-  return <div className="space-y-5">
+  return <div className="space-y-4">
     {error && <p className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800" role="alert">{error}</p>}
-    {loading ? <p className="rounded-lg border border-[#e0e2d9] bg-white p-5 text-sm text-[#68736d]" role="status">Loading saved course topics…</p>
-      : topics.length === 0 ? <section className="rounded-xl border border-[#dce3db] bg-white p-5 sm:p-6"><h3 className="font-semibold text-[#19352d]">No saved syllabus topics available</h3><p className="mt-2 text-sm leading-6 text-[#68736d]">Scenario Practice uses your active courses and saved syllabus. Create or finish a course syllabus, then retry.</p><button className="mt-3 text-sm font-semibold text-[#176b59] underline focus-visible:outline-2 focus-visible:outline-[#176b59]" onClick={() => void load()} type="button">Retry</button></section>
-      : !review && <section className="rounded-xl border border-[#dce3db] bg-white p-5 shadow-sm sm:p-6"><p className="text-xs font-bold uppercase tracking-wide text-[#176b59]">Grounded in your syllabus</p><h3 className="mt-1 text-lg font-semibold text-[#19352d]">Choose a course topic</h3><p className="mt-1 text-sm leading-6 text-[#68736d]">A bounded scenario set is prepared only when requested. Descriptive answers use reference answers and self-review; they are not automatically graded.</p><div className="mt-4 grid gap-4 sm:grid-cols-2"><label className="min-w-0 text-sm font-medium">Saved course topic<select className="mt-2 block min-h-11 w-full rounded-md border border-[#d9ddd5] bg-white px-3 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#176b59]" onChange={(event) => setSelectedKey(event.target.value)} value={selectedKey}>{topics.map((item) => <option key={`${item.courseId}:${item.topicId}`} value={`${item.courseId}:${item.topicId}`}>{item.courseTitle} · {item.moduleTitle} · {item.title}</option>)}</select></label><label className="text-sm font-medium">Difficulty<select className="mt-2 block min-h-11 w-full rounded-md border border-[#d9ddd5] bg-white px-3 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#176b59]" onChange={(event) => setDifficulty(event.target.value)} value={difficulty}>{["Easy", "Medium", "Hard"].map((item) => <option key={item}>{item}</option>)}</select></label><label className="text-sm font-medium">Scenarios requested<select className="mt-2 block min-h-11 w-full rounded-md border border-[#d9ddd5] bg-white px-3 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#176b59]" onChange={(event) => setCount(Number(event.target.value))} value={count}>{[3, 5, 8].map((item) => <option key={item} value={item}>{item} scenarios</option>)}</select></label></div><p className="mt-3 break-words text-xs text-[#68736d]">Selected topic: {selected ? `${selected.courseTitle} · ${selected.moduleTitle} · ${selected.title}` : "Choose a topic"}</p><button className="mt-4 min-h-11 rounded-md bg-[#176b59] px-4 py-2 text-sm font-semibold text-white hover:bg-[#125644] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#176b59] disabled:opacity-50" disabled={busy || !selected} onClick={() => void generate()} type="button">{busy ? "Preparing scenarios…" : "Generate scenario set"}</button><p className="mt-2 text-xs text-[#68736d]">Uses the configured question-generation provider only after you select Generate. Matching context is cached privately to your account.</p></section>}
+    <section aria-labelledby="scenario-setup-title" className="rounded-xl border border-[#dce3db] bg-white p-4 shadow-sm sm:p-5">
+      <div className="max-w-2xl">
+        <p className="text-xs font-bold uppercase tracking-wide text-[#176b59]">Scenario-Based Practice</p>
+        <h3 className="mt-1 text-lg font-semibold text-[#19352d]" id="scenario-setup-title">Build a scenario set from your syllabus</h3>
+        <p className="mt-1 text-sm leading-5 text-[#68736d]">Choose a course and topic. Reference answers are for self-review; responses are not automatically graded.</p>
+      </div>
+
+      {!user ? <p className="mt-4 rounded-md bg-[#f6f8f5] p-3 text-sm text-[#68736d]">Sign in to practice from your saved courses.</p>
+        : loading ? <p className="mt-4 text-sm text-[#68736d]" role="status">Loading your courses…</p>
+          : error && !courses.length ? <div className="mt-4"><button className="text-sm font-semibold text-[#176b59] underline" onClick={() => void load()} type="button">Retry loading courses</button></div>
+            : courses.length === 0 ? <div className="mt-4 rounded-md bg-[#f6f8f5] p-4"><p className="text-sm text-[#68736d]">No active courses are available yet.</p><Link className="mt-2 inline-flex text-sm font-semibold text-[#176b59] underline" href="/dashboard/new">Create a course</Link></div>
+              : <div className="mt-4 space-y-4">
+                <label className="block max-w-2xl text-sm font-semibold text-[#31463b]">1. Select course
+                  <select className="mt-1.5 block min-h-12 w-full rounded-md border border-[#b8c9bd] bg-white px-3 py-2 text-base font-medium text-[#19352d] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#176b59]" onChange={(event) => { const nextCourse = courses.find((course) => course.courseId === event.target.value); setSelection(selectScenarioCourse(event.target.value)); setTopics([]); setTopicError(""); setTopicsLoading(nextCourse?.syllabusStatus === "ready"); setReview(null); setError(""); }} value={selection.courseId}>
+                    <option value="">Choose one of your courses</option>
+                    {courses.map((course) => <option key={course.courseId} value={course.courseId}>{course.title}</option>)}
+                  </select>
+                </label>
+
+                {selectedCourse && selectedCourse.syllabusStatus !== "ready" && <div className="max-w-2xl rounded-md bg-[#f6f8f5] px-3 py-3 text-sm leading-5 text-[#586761]" role="status">
+                  <p>{syllabusMessage(selectedCourse.syllabusStatus)}</p>
+                  {selectedCourse.syllabusStatus === "generating" && <button className="mt-2 font-semibold text-[#176b59] underline" onClick={() => void load()} type="button">Refresh course status</button>}
+                  {selectedCourse.syllabusStatus !== "generating" && <Link className="mt-2 inline-flex font-semibold text-[#176b59] underline" href={`/dashboard/courses/${encodeURIComponent(selectedCourse.courseId)}`}>Open course syllabus</Link>}
+                </div>}
+
+                {selectedCourse?.syllabusStatus === "ready" && <>
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    <label className="min-w-0 text-sm font-medium text-[#31463b]">2. Select topic
+                      <select className="mt-1.5 block min-h-11 w-full rounded-md border border-[#d9ddd5] bg-white px-3 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#176b59]" disabled={topicsLoading || !!topicError || !visibleTopics.length} onChange={(event) => { setSelection((current) => ({ ...current, topicId: event.target.value })); setReview(null); }} value={selection.topicId}>
+                        <option value="">{topicsLoading ? "Loading syllabus topics…" : visibleTopics.length ? "Choose a topic" : "No topics available"}</option>
+                        {visibleTopics.map((topic) => <option key={topic.topicId} value={topic.topicId}>{topic.moduleTitle} · {topic.title}</option>)}
+                      </select>
+                    </label>
+                    <label className="text-sm font-medium text-[#31463b]">3. Difficulty
+                      <select className="mt-1.5 block min-h-11 w-full rounded-md border border-[#d9ddd5] bg-white px-3 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#176b59]" onChange={(event) => setDifficulty(event.target.value)} value={difficulty}>{["Easy", "Medium", "Hard"].map((item) => <option key={item}>{item}</option>)}</select>
+                    </label>
+                    <label className="text-sm font-medium text-[#31463b]">4. Number of scenarios
+                      <select className="mt-1.5 block min-h-11 w-full rounded-md border border-[#d9ddd5] bg-white px-3 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#176b59]" onChange={(event) => setCount(Number(event.target.value))} value={count}>{[3, 5, 8].map((item) => <option key={item} value={item}>{item} scenarios</option>)}</select>
+                    </label>
+                  </div>
+                  {topicsLoading && <p className="text-sm text-[#68736d]" role="status">Loading topics from this saved syllabus…</p>}
+                  {topicError && <div className="text-sm text-red-800" role="alert"><p>{topicError}</p><button className="mt-1 font-semibold underline" onClick={() => { setTopicError(""); setTopicsLoading(true); setReloadTopics((value) => value + 1); }} type="button">Retry topic loading</button></div>}
+                  {!topicsLoading && !topicError && visibleTopics.length === 0 && <p className="rounded-md bg-[#f6f8f5] px-3 py-2 text-sm text-[#68736d]" role="status">This saved syllabus has no topics available for practice.</p>}
+                  <div className="flex flex-wrap items-center gap-3 border-t border-[#edf0ec] pt-4">
+                    <button className="min-h-11 rounded-md bg-[#176b59] px-4 py-2 text-sm font-semibold text-white hover:bg-[#125644] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#176b59] disabled:cursor-not-allowed disabled:opacity-50" disabled={busy || topicsLoading || !!topicError || !selectedTopic} onClick={() => void generate()} type="button">{busy ? "Preparing scenarios…" : "Generate scenarios"}</button>
+                    <p className="text-xs text-[#68736d]">Generation uses the configured provider only when requested; matching sets are cached to your account.</p>
+                  </div>
+                </>}
+              </div>}
+    </section>
     {review && ("questions" in review ? <GeneratedScenarioReview review={review} onClose={() => setReview(null)}/> : <LegacyScenarioReview review={review} onClose={() => setReview(null)}/>)}
     {!session && <ScenarioHistory attempts={attempts} error={historyError} onReview={(id) => void reviewAttempt(id)} onRefresh={() => void refreshHistory()}/>}
   </div>;
 }
 
+function syllabusMessage(status: Course["syllabusStatus"]) {
+  if (status === "generating") return "This course syllabus is still being prepared. Refresh the course after generation finishes.";
+  if (status === "failed") return "This course syllabus could not be generated. Open the course to retry syllabus creation.";
+  if (status === "unavailable") return "The saved syllabus for this course is unavailable. Open the course to review or regenerate it.";
+  return "This course has no saved syllabus yet. Create a syllabus to choose a scenario topic.";
+}
+
 function ScenarioHistory({ attempts, error, onReview, onRefresh }: { attempts: Attempt[]; error: string; onReview: (id: string) => void; onRefresh: () => void }) {
-  return <section className="rounded-xl border border-[#dce3db] bg-white p-5 sm:p-6"><div className="flex items-center justify-between gap-3"><h3 className="font-semibold text-[#19352d]">Recent scenario attempts</h3><button className="text-sm font-semibold text-[#176b59] underline" onClick={onRefresh} type="button">Refresh</button></div>{error && <p className="mt-3 text-sm text-red-700" role="alert">{error}</p>}{attempts.length ? <ul className="mt-3 divide-y divide-[#edf0ec]">{attempts.map((item) => <li className="flex flex-wrap items-center justify-between gap-3 py-3" key={item.attemptId}><span className="min-w-0"><span className="block break-words text-sm font-medium">{item.courseTitle} · {item.topicTitle}</span><span className="text-xs text-[#68736d]">{item.difficulty}{item.completedAt ? ` · ${new Date(item.completedAt).toLocaleDateString()}` : ""} · descriptive self-review</span></span><button className="min-h-9 rounded-md border border-[#cbd8d0] px-3 py-1.5 text-sm font-semibold text-[#176b59]" onClick={() => onReview(item.attemptId)} type="button">Review</button></li>)}</ul> : !error && <p className="mt-3 text-sm text-[#68736d]">No saved scenario attempts yet.</p>}</section>;
+  return <section className="rounded-xl border border-[#dce3db] bg-white p-4 sm:p-5"><div className="flex items-center justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-wide text-[#c35d42]">Your practice</p><h3 className="mt-1 font-semibold text-[#19352d]">Recent scenario attempts</h3></div><button className="min-h-9 rounded-md border border-[#cbd8d0] px-3 text-sm font-semibold text-[#176b59] hover:bg-[#f6f8f5]" onClick={onRefresh} type="button">Refresh</button></div>{error && <p className="mt-3 text-sm text-red-700" role="alert">{error}</p>}{attempts.length ? <ul className="mt-2 divide-y divide-[#edf0ec]">{attempts.map((item) => <li className="flex flex-wrap items-center justify-between gap-3 py-3" key={item.attemptId}><span className="min-w-0"><span className="block break-words text-sm font-medium text-[#31463b]">{item.courseTitle} · {item.topicTitle}</span><span className="text-xs text-[#68736d]">{item.difficulty}{item.completedAt ? ` · ${new Date(item.completedAt).toLocaleDateString()}` : ""} · descriptive self-review</span></span><button className="min-h-9 rounded-md border border-[#cbd8d0] px-3 py-1.5 text-sm font-semibold text-[#176b59]" onClick={() => onReview(item.attemptId)} type="button">Review</button></li>)}</ul> : !error && <p className="mt-3 text-sm text-[#68736d]">No saved scenario attempts yet.</p>}</section>;
 }
 
 function LegacyScenarioReview({ review, onClose }: { review: LegacyReview; onClose: () => void }) {

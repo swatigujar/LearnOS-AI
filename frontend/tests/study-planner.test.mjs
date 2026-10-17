@@ -12,7 +12,6 @@ import {
   moveCalendarDate,
   validateSessionDraft,
   visibleCalendarDates,
-  weeklyActivityUnavailableMessage,
 } from "../lib/study-planner.ts";
 
 test("month calendar is a Monday-first six-week grid with stable navigation", () => {
@@ -89,11 +88,4 @@ test("time zone detection exposes an explicit UTC fallback and validates zones",
   assert.equal(FALLBACK_TIME_ZONE, "UTC");
   assert.equal(isSupportedTimeZone("Europe/London"), true);
   assert.equal(isSupportedTimeZone("Not/A-Time-Zone"), false);
-});
-
-test("weekly activity errors expose a neutral unavailable message without technical details or retry UI copy", () => {
-  const message = weeklyActivityUnavailableMessage(new Error("Choose a valid time zone."));
-  assert.match(message, /unavailable/i);
-  assert.doesNotMatch(message, /Choose a valid time zone|Retry/);
-  assert.doesNotMatch(message, /0 lessons|no lesson completions/i);
 });

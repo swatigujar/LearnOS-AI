@@ -16,7 +16,6 @@ from app.api.schemas.study_planner import (
     StudySessionStatusUpdate,
     StudySessionUpdate,
     WeeklyActivityDay,
-    WeeklyGoalUpdate,
 )
 from app.core.firebase import get_firestore_client
 
@@ -259,16 +258,10 @@ def get_planner_overview(
     sessions.sort(key=lambda item: item.startAt)
     completion_events.sort(key=lambda item: item.completedAt)
 
-    settings = database.document(f"users/{user_id}/learningSettings/planner").get().to_dict() or {}
-    weekly_target = settings.get("weeklyLessonTarget")
-    if type(weekly_target) is not int or not 1 <= weekly_target <= 100:
-        weekly_target = None
-
     return PlannerOverview(
         courses=courses,
         sessions=sessions,
         completions=completion_events,
-        weeklyTarget=weekly_target,
         weeklyCompletedLessons=len(weekly_events),
         weeklyActivity=weekly_activity,
     )
@@ -366,14 +359,3 @@ def delete_study_session(session_id: str, user: dict = Depends(get_current_user)
     if data.get("status") == "completed":
         raise HTTPException(status_code=409, detail="Completed sessions cannot be deleted.")
     session_ref.delete()
-
-
-@router.put("/weekly-goal")
-def update_weekly_goal(request: WeeklyGoalUpdate, user: dict = Depends(get_current_user)):
-    user_id = _user_id(user)
-    reference = get_firestore_client().document(f"users/{user_id}/learningSettings/planner")
-    if request.weeklyTarget is None:
-        reference.set({"weeklyLessonTarget": firestore.DELETE_FIELD, "updatedAt": firestore.SERVER_TIMESTAMP}, merge=True)
-        return {"weeklyTarget": None}
-    reference.set({"weeklyLessonTarget": request.weeklyTarget, "updatedAt": firestore.SERVER_TIMESTAMP}, merge=True)
-    return {"weeklyTarget": request.weeklyTarget}

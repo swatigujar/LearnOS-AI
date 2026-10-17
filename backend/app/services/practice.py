@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 import re
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
@@ -16,12 +17,15 @@ from app.api.schemas.practice import (
     PracticeGeneratedSetResponse, PracticeGeneratedSubmitRequest,
     PracticeAttemptList, PracticeAttemptSummary, PracticeCourseList,
     PracticeQuestion, PracticeQuestionList, PracticeResult,
+    PracticeCourseCatalog, PracticeCourseOption, PracticeCourseTopic, PracticeCourseTopics,
     PracticeReviewedQuestion, PracticeTopic, ScenarioCatalogResponse,
     ScenarioReviewedResult, ScenarioView,
 )
 from app.api.schemas.syllabus import GeneratedSyllabus
 from app.core.firebase import get_firestore_client
 from app.services.ai_provider import AIProviderError, get_ai_provider
+
+logger = logging.getLogger(__name__)
 
 
 # Starter questions reuse the reviewed Java variables demo bank already present
@@ -386,6 +390,69 @@ def list_practice_topics(user):
     return PracticeCourseList(topics=topics)
 
 
+def _active_course_ids(database, uid):
+    return {
+        getattr(goal, "id", None)
+        for goal in database.collection(f"users/{uid}/learningGoals").get() or []
+        if getattr(goal, "id", None)
+    }
+
+
+def _practice_syllabus_status(course, course_ref):
+    version = course.get("syllabusVersion")
+    if type(version) is int and version > 0 and course.get("syllabusStatus") == "ready":
+        snapshot = course_ref.collection("syllabus").document(f"v{version}").get()
+        if snapshot.exists:
+            try:
+                raw = snapshot.to_dict() or {}
+                GeneratedSyllabus.model_validate({key: value for key, value in raw.items() if key in GeneratedSyllabus.model_fields})
+                return "ready"
+            except ValidationError:
+                return "unavailable"
+        return "unavailable"
+    if course.get("syllabusStatus") in ("generating", "failed"):
+        return course["syllabusStatus"]
+    return "not_generated"
+
+
+def list_practice_courses(user):
+    uid = _uid(user)
+    database = get_firestore_client()
+    courses = []
+    for goal in database.collection(f"users/{uid}/learningGoals").get() or []:
+        course_id = getattr(goal, "id", None)
+        if not course_id:
+            continue
+        goal_data = goal.to_dict() or {}
+        course_ref = database.document(f"users/{uid}/courses/{course_id}")
+        course = course_ref.get().to_dict() or {}
+        title = course.get("course_name") or course.get("courseName") or goal_data.get("courseName") or goal_data.get("courseTrack") or goal_data.get("goalText") or "Saved course"
+        courses.append(PracticeCourseOption(courseId=course_id, title=title,
+            syllabusStatus=_practice_syllabus_status(course, course_ref)))
+    return PracticeCourseCatalog(courses=courses)
+
+
+def list_practice_course_topics(course_id, user):
+    uid = _uid(user)
+    database = get_firestore_client()
+    if course_id not in _active_course_ids(database, uid):
+        raise HTTPException(404, "This course is no longer available.")
+    course_ref = database.document(f"users/{uid}/courses/{course_id}")
+    course = course_ref.get().to_dict() or {}
+    version = course.get("syllabusVersion")
+    if _practice_syllabus_status(course, course_ref) != "ready" or type(version) is not int or version < 1:
+        raise HTTPException(409, "This course does not have an available saved syllabus yet.")
+    saved = course_ref.collection("syllabus").document(f"v{version}").get()
+    raw = saved.to_dict() or {}
+    try:
+        syllabus = GeneratedSyllabus.model_validate({key: value for key, value in raw.items() if key in GeneratedSyllabus.model_fields})
+    except ValidationError as exc:
+        raise HTTPException(409, "The saved syllabus needs review before practice.") from exc
+    topics = [PracticeCourseTopic(topicId=topic.topic_id, title=topic.title, moduleTitle=module.title, syllabusVersion=version)
+        for module in syllabus.modules for topic in module.topics]
+    return PracticeCourseTopics(topics=topics)
+
+
 def read_practice_questions(course_id, topic_id, version, difficulty, user):
     database = get_firestore_client()
     _, _, _, _, bank, *_ = _active_topic_context(database, _uid(user), course_id, topic_id, version)
@@ -616,16 +683,27 @@ def generate_practice_questions(request: PracticeGenerateRequest, user):
         _practice_relevance_check(generated.questions, context_title, objective)
     except AIProviderError as exc:
         cache_ref.set({"status": "failed", "failureKind": "provider", "updatedAt": firestore.SERVER_TIMESTAMP}, merge=True)
-        if exc.status_code == 429:
+        if exc.source == "provider" and exc.status_code == 429:
+            failure_category = "provider_quota_rate_limit"
+        elif exc.source == "provider" and exc.status_code in (401, 403):
+            failure_category = "provider_authentication"
+        else:
+            failure_category = exc.source
+        logger.warning("Practice generation failed category=%s status=%s.", failure_category, exc.status_code)
+        if exc.status_code == 429 and exc.source == "provider":
             raise HTTPException(429, "Question generation is currently limited by the provider quota. Try again later.") from exc
+        if exc.source in ("daily_request_limit", "monthly_cost_limit", "application_limit") and exc.status_code == 429:
+            raise HTTPException(429, "Practice generation is temporarily unavailable due to an application usage limit. Try again later.") from exc
         if exc.status_code == 504:
             raise HTTPException(504, "Question generation timed out. You can retry explicitly.") from exc
         raise HTTPException(503, "Question generation is temporarily unavailable. You can retry explicitly.") from exc
     except (ValidationError, ValueError, TypeError) as exc:
         cache_ref.set({"status": "failed", "failureKind": "validation", "updatedAt": firestore.SERVER_TIMESTAMP}, merge=True)
+        logger.warning("Practice generation failed category=invalid_provider_output exception_type=%s.", type(exc).__name__)
         raise HTTPException(502, "Generated questions did not pass validation. No questions were saved; you can retry explicitly.") from exc
     except Exception as exc:
         cache_ref.set({"status": "failed", "failureKind": "provider", "updatedAt": firestore.SERVER_TIMESTAMP}, merge=True)
+        logger.warning("Practice generation failed category=unexpected exception_type=%s.", type(exc).__name__)
         raise HTTPException(503, "Question generation is temporarily unavailable. You can retry explicitly.") from exc
 
     data = {"status": "ready", "mode": request.mode, **mode_context,

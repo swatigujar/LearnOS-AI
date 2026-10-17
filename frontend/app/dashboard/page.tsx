@@ -14,7 +14,7 @@ import {
   type LearningGoal,
 } from "@/lib/learning-data";
 import { createProgressLoader, fetchUserProgress, selectContinueCourse, type CourseProgress, type ProgressSummary } from "@/lib/progress";
-import { StudyPlanner, WeeklyLearningInsights } from "@/components/study-planner";
+import { LearningInsights, StudyPlanner } from "@/components/study-planner";
 import { PracticeCenter } from "@/components/practice-center";
 
 const sections = [
@@ -288,7 +288,7 @@ export default function DashboardPage() {
                 </Link>}
               </section>
 
-              <WeeklyLearningInsights courses={progressSummary?.courses ?? []} onOpenPlanner={() => setSection("Study Planner")} />
+              <LearningInsights courses={progressSummary?.courses ?? []} />
 
               <div>
               <div className="mb-4 flex flex-wrap items-end justify-between gap-4">
@@ -431,7 +431,7 @@ export default function DashboardPage() {
                     </div>}
                   </dl>
 
-                  <WeeklyLearningInsights courses={progressSummary.courses} onOpenPlanner={() => setSection("Study Planner")} />
+                  <LearningInsights courses={progressSummary.courses} />
 
                   {progressSummary.courses.length === 0 ? (
                     <section className="rounded-lg border border-[#e0e2d9] bg-white p-7">

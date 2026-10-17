@@ -45,12 +45,6 @@ class StudySessionStatusUpdate(BaseModel):
     status: Literal["completed", "cancelled"]
 
 
-class WeeklyGoalUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    weeklyTarget: int | None = Field(..., ge=1, le=100)
-
-
 class PlannerLesson(BaseModel):
     lessonId: str
     title: str
@@ -97,6 +91,5 @@ class PlannerOverview(BaseModel):
     courses: list[PlannerCourse]
     sessions: list[PlannerSession]
     completions: list[LessonCompletionActivity]
-    weeklyTarget: int | None = None
     weeklyCompletedLessons: int = 0
     weeklyActivity: list[WeeklyActivityDay]

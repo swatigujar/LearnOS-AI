@@ -36,6 +36,27 @@ class PracticeCourseList(BaseModel):
     topics: list[PracticeTopic]
 
 
+class PracticeCourseOption(BaseModel):
+    courseId: str
+    title: str
+    syllabusStatus: Literal["ready", "not_generated", "generating", "failed", "unavailable"]
+
+
+class PracticeCourseCatalog(BaseModel):
+    courses: list[PracticeCourseOption]
+
+
+class PracticeCourseTopic(BaseModel):
+    topicId: str
+    title: str
+    moduleTitle: str
+    syllabusVersion: int
+
+
+class PracticeCourseTopics(BaseModel):
+    topics: list[PracticeCourseTopic]
+
+
 class PracticeQuestionList(BaseModel):
     questions: list[PracticeQuestion]
 

@@ -9,8 +9,9 @@ from fastapi.testclient import TestClient
 from app.api.dependencies import get_current_user
 from app.api.schemas.practice import InterviewCategoryAvailability, PracticeTopic
 from app.main import app
-from app.services import practice
+from app.services import ai_provider, practice
 from app.services.ai_provider import AIProviderError
+from app.services.ai_usage import UsageLimitError
 from tests.test_syllabus import make_syllabus
 
 
@@ -62,6 +63,8 @@ class FakePracticeFirestore:
             "users/learner-a/learningGoals/java-goal": {"courseName": "Java Fundamentals"},
             "users/learner-a/courses/java-goal": {"sourceLearningGoalId": "java-goal", "syllabusStatus": "ready", "syllabusVersion": 1},
             "users/learner-a/courses/java-goal/syllabus/v1": syllabus,
+            "users/learner-a/learningGoals/draft-goal": {"courseName": "Course Without Syllabus"},
+            "users/learner-a/courses/draft-goal": {"sourceLearningGoalId": "draft-goal", "syllabusStatus": "not_generated"},
             "users/learner-a/courses/deleted-goal": {"sourceLearningGoalId": "deleted-goal", "syllabusStatus": "ready", "syllabusVersion": 1},
             "users/learner-a/courses/deleted-goal/syllabus/v1": syllabus,
             "users/learner-b/learningGoals/private-goal": {"courseName": "Java Fundamentals"},
@@ -112,6 +115,36 @@ class PracticeEndpointsTests(unittest.TestCase):
         self.assertEqual(response.json()["topics"][0]["difficulties"], ["Easy", "Medium", "Hard"])
         self.assertEqual(response.json()["topics"][0]["questionCount"], 5)
         self.assertEqual(response.json()["topics"][0]["questionCounts"], {"Easy": 4, "Medium": 1, "Hard": 0})
+
+    def test_scenario_course_catalog_is_user_scoped_and_includes_courses_without_syllabus(self):
+        response = self.client.get("/api/practice/courses/catalog")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual({item["courseId"] for item in response.json()["courses"]}, {"java-goal", "draft-goal"})
+        draft = next(item for item in response.json()["courses"] if item["courseId"] == "draft-goal")
+        self.assertEqual(draft["syllabusStatus"], "not_generated")
+        self.assertNotIn("deleted-goal", response.text)
+        self.uid = "learner-b"
+        private = self.client.get("/api/practice/courses/catalog")
+        self.assertEqual([item["courseId"] for item in private.json()["courses"]], ["private-goal"])
+
+    def test_scenario_topics_are_limited_to_selected_course_and_require_its_saved_syllabus(self):
+        syllabus = make_syllabus().model_dump(mode="json")
+        syllabus["modules"][0]["topics"][0].update({"title": "Linear equations", "description": "Solve equations using inverse operations."})
+        self.database.docs.update({
+            "users/learner-a/learningGoals/algebra-goal": {"courseName": "Applied Algebra"},
+            "users/learner-a/courses/algebra-goal": {"sourceLearningGoalId": "algebra-goal", "syllabusStatus": "ready", "syllabusVersion": 1},
+            "users/learner-a/courses/algebra-goal/syllabus/v1": syllabus,
+        })
+        java_topics = self.client.get("/api/practice/courses/java-goal/topics")
+        self.assertEqual(java_topics.status_code, 200)
+        self.assertEqual([item["title"] for item in java_topics.json()["topics"]], ["Variables"])
+        algebra_topics = self.client.get("/api/practice/courses/algebra-goal/topics")
+        self.assertEqual([item["title"] for item in algebra_topics.json()["topics"]], ["Linear equations"])
+        missing_syllabus = self.client.get("/api/practice/courses/draft-goal/topics")
+        self.assertEqual(missing_syllabus.status_code, 409)
+        self.uid = "learner-b"
+        cross_user = self.client.get("/api/practice/courses/algebra-goal/topics")
+        self.assertEqual(cross_user.status_code, 404)
 
     def test_topic_discovery_does_not_require_a_hardcoded_course_name(self):
         syllabus = make_syllabus().model_dump(mode="json")
@@ -347,6 +380,36 @@ class PracticeEndpointsTests(unittest.TestCase):
                 self.assertEqual(response.status_code, expected)
                 self.assertNotIn("private provider details", response.text)
                 provider.generate_structured.assert_called_once()
+
+    def test_application_usage_limit_is_not_reported_as_provider_quota(self):
+        payload = {"mode": "concept", "courseId": "java-goal", "topicId": "module-1-topic-1",
+            "syllabusVersion": 1, "difficulty": "Easy", "questionCount": 2}
+        provider = ai_provider.GeminiProvider()
+        with patch.object(practice, "get_ai_provider", return_value=provider), patch.object(
+            ai_provider, "run_tracked_provider_call",
+            side_effect=UsageLimitError("private usage budget details", 429),
+        ) as tracked_call:
+            response = self.client.post("/api/practice/generate", json=payload)
+        self.assertEqual(response.status_code, 429)
+        self.assertIn("application usage limit", response.json()["detail"])
+        self.assertNotIn("provider quota", response.json()["detail"])
+        self.assertNotIn("private usage budget details", response.text)
+        tracked_call.assert_called_once()
+
+    def test_daily_and_monthly_limits_emit_distinct_sanitized_diagnostics(self):
+        payload = {"mode": "concept", "courseId": "java-goal", "topicId": "module-1-topic-1",
+            "syllabusVersion": 1, "difficulty": "Easy", "questionCount": 2}
+        for source in ("daily_request_limit", "monthly_cost_limit"):
+            provider = ai_provider.GeminiProvider()
+            with self.subTest(source=source), patch.object(practice, "get_ai_provider", return_value=provider), patch.object(
+                ai_provider, "run_tracked_provider_call",
+                side_effect=UsageLimitError("private usage limit detail", 429, source=source),
+            ), self.assertLogs(practice.logger, level="WARNING") as captured:
+                response = self.client.post("/api/practice/generate", json=payload)
+            self.assertEqual(response.status_code, 429)
+            self.assertIn("application usage limit", response.json()["detail"])
+            self.assertTrue(any(f"category={source}" in line for line in captured.output))
+            self.assertNotIn("private usage limit detail", " ".join(captured.output))
 
     def test_interview_mcq_check_and_descriptive_review_are_server_held_until_attempted(self):
         bank = self.client.get("/api/practice/interview/questions", params={"category": "SQL", "difficulty": "Easy"})

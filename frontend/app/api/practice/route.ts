@@ -28,6 +28,12 @@ export async function GET(request: Request) {
   const query = new URL(request.url).searchParams;
   const action = query.get("action");
   if (action === "courses" || action === "attempts") return forward(request, action, "GET");
+  if (action === "courseCatalog") return forward(request, "courses/catalog", "GET");
+  if (action === "courseTopics") {
+    const courseId = query.get("courseId") ?? "";
+    if (!courseId || courseId.includes("/")) return Response.json({ detail: "Choose a valid course." }, { status: 400 });
+    return forward(request, `courses/${encodeURIComponent(courseId)}/topics`, "GET");
+  }
   if (action === "interviewCatalog") return forward(request, "interview/catalog", "GET");
   if (action === "scenarios") return forward(request, "scenarios", "GET");
   if (action === "attemptDetail") return forward(request, `attempts/${encodeURIComponent(query.get("attemptId") ?? "")}`, "GET");

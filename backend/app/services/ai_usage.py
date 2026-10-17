@@ -23,9 +23,10 @@ logger = logging.getLogger(__name__)
 
 
 class UsageLimitError(Exception):
-    def __init__(self, message: str, status_code: int = 429):
+    def __init__(self, message: str, status_code: int = 429, *, source: str = "application_limit"):
         super().__init__(message)
         self.status_code = status_code
+        self.source = source
 
 
 def _pricing() -> tuple[float, float]:
@@ -33,9 +34,9 @@ def _pricing() -> tuple[float, float]:
         input_rate = float(GEMINI_INPUT_PRICE_PER_MILLION_USD)
         output_rate = float(GEMINI_OUTPUT_PRICE_PER_MILLION_USD)
     except (TypeError, ValueError) as exc:
-        raise UsageLimitError("Gemini pricing is not configured; AI requests are disabled.", 503) from exc
+        raise UsageLimitError("Gemini pricing is not configured; AI requests are disabled.", 503, source="configuration") from exc
     if not all(math.isfinite(value) and value >= 0 for value in (input_rate, output_rate)):
-        raise UsageLimitError("Gemini pricing configuration is invalid; AI requests are disabled.", 503)
+        raise UsageLimitError("Gemini pricing configuration is invalid; AI requests are disabled.", 503, source="configuration")
     return input_rate, output_rate
 
 
@@ -65,14 +66,14 @@ def _reserve(transaction, daily_ref, monthly_ref, request_ref, record, request_l
     current_requests = daily_data.get("request_count") if daily_snapshot.exists else 0
     current_estimated_cost = monthly_data.get("reserved_estimated_cost_usd") if monthly_snapshot.exists else 0.0
     if not isinstance(current_requests, int) or isinstance(current_requests, bool) or current_requests < 0:
-        raise UsageLimitError("Gemini usage records need review; AI requests are disabled.", 503)
+        raise UsageLimitError("Gemini usage records need review; AI requests are disabled.", 503, source="usage_data")
     if not isinstance(current_estimated_cost, (int, float)) or not math.isfinite(current_estimated_cost) or current_estimated_cost < 0:
-        raise UsageLimitError("Gemini cost records need review; AI requests are disabled.", 503)
+        raise UsageLimitError("Gemini cost records need review; AI requests are disabled.", 503, source="usage_data")
     if current_requests >= request_limit:
-        raise UsageLimitError("The configured daily Gemini request limit has been reached.")
+        raise UsageLimitError("The configured daily Gemini request limit has been reached.", source="daily_request_limit")
     next_cost = round(float(current_estimated_cost) + record["reserved_estimated_cost_usd"], 8)
     if next_cost > cost_limit:
-        raise UsageLimitError("The configured monthly Gemini estimated-cost limit has been reached.")
+        raise UsageLimitError("The configured monthly Gemini estimated-cost limit has been reached.", source="monthly_cost_limit")
 
     transaction.create(request_ref, record)
     transaction.set(daily_ref, {
@@ -98,7 +99,7 @@ def _settle(transaction, monthly_ref, request_ref, update):
     monthly_data = monthly_snapshot.to_dict() if monthly_snapshot.exists else {}
     current_cost = monthly_data.get("reserved_estimated_cost_usd")
     if not isinstance(current_cost, (int, float)) or not math.isfinite(current_cost) or current_cost < 0:
-        raise UsageLimitError("Gemini cost records need review; AI requests are disabled.", 503)
+        raise UsageLimitError("Gemini cost records need review; AI requests are disabled.", 503, source="usage_data")
 
     revised_cost = current_cost
     actual_cost = update.get("estimated_cost_usd")
@@ -188,19 +189,19 @@ def run_tracked_provider_call(
 ):
     """Reserve budget before invoking Gemini, then settle from returned metadata."""
     if not request_id or len(request_id) > 160:
-        raise UsageLimitError("A valid Gemini request identifier is required.", 503)
+        raise UsageLimitError("A valid Gemini request identifier is required.", 503, source="configuration")
     if AI_DAILY_REQUEST_LIMIT <= 0 or not math.isfinite(AI_MONTHLY_ESTIMATED_COST_LIMIT_USD) or AI_MONTHLY_ESTIMATED_COST_LIMIT_USD <= 0:
-        raise UsageLimitError("Gemini request limits are invalid; AI requests are disabled.", 503)
+        raise UsageLimitError("Gemini request limits are invalid; AI requests are disabled.", 503, source="configuration")
     output_cap = AI_MAX_OUTPUT_TOKENS if max_output_tokens is None else max_output_tokens
     if not isinstance(output_cap, int) or isinstance(output_cap, bool) or output_cap < 1:
-        raise UsageLimitError("Gemini output-token limit is invalid; AI requests are disabled.", 503)
+        raise UsageLimitError("Gemini output-token limit is invalid; AI requests are disabled.", 503, source="configuration")
     if not isinstance(reserved_search_count, int) or reserved_search_count < 0:
-        raise UsageLimitError("Gemini research budget is invalid; AI requests are disabled.", 503)
+        raise UsageLimitError("Gemini research budget is invalid; AI requests are disabled.", 503, source="configuration")
     if (not isinstance(search_price_per_thousand_usd, (int, float))
             or not math.isfinite(search_price_per_thousand_usd) or search_price_per_thousand_usd < 0):
-        raise UsageLimitError("Gemini search pricing is invalid; AI requests are disabled.", 503)
+        raise UsageLimitError("Gemini search pricing is invalid; AI requests are disabled.", 503, source="configuration")
     if not isinstance(fixed_cost_usd, (int, float)) or not math.isfinite(fixed_cost_usd) or fixed_cost_usd < 0:
-        raise UsageLimitError("Gemini fixed cost is invalid; AI requests are disabled.", 503)
+        raise UsageLimitError("Gemini fixed cost is invalid; AI requests are disabled.", 503, source="configuration")
     # UTF-8 bytes conservatively bound text input tokens. Double the output cap
     # to reserve room for thinking tokens in addition to visible response text.
     reserved_input_tokens = len(prompt_content.encode("utf-8"))
@@ -215,7 +216,7 @@ def run_tracked_provider_call(
         database = get_firestore_client()
     except Exception as exc:
         logger.error("Gemini usage database is unavailable (%s).", type(exc).__name__)
-        raise UsageLimitError("Gemini usage limits are unavailable; AI requests are disabled.", 503) from exc
+        raise UsageLimitError("Gemini usage limits are unavailable; AI requests are disabled.", 503, source="usage_store") from exc
     refs = _request_refs(database, feature, request_id, now)
     daily_ref, monthly_ref, request_ref = refs
     record = {
@@ -239,9 +240,9 @@ def run_tracked_provider_call(
         raise
     except Exception as exc:
         logger.error("Gemini usage reservation failed (%s).", type(exc).__name__)
-        raise UsageLimitError("Gemini usage limits are unavailable; AI requests are disabled.", 503) from exc
+        raise UsageLimitError("Gemini usage limits are unavailable; AI requests are disabled.", 503, source="usage_store") from exc
     if reservation == "duplicate":
-        raise UsageLimitError("This Gemini request was already submitted; duplicate execution was blocked.", 409)
+        raise UsageLimitError("This Gemini request was already submitted; duplicate execution was blocked.", 409, source="duplicate_request")
 
     started = perf_counter()
     try:

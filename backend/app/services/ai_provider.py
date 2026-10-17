@@ -27,10 +27,11 @@ from app.services.ai_usage import UsageLimitError, run_tracked_provider_call
 
 
 class AIProviderError(Exception):
-    def __init__(self, provider: str, message: str, status_code: int | None = None):
+    def __init__(self, provider: str, message: str, status_code: int | None = None, *, source: str = "provider"):
         super().__init__(message)
         self.provider = provider
         self.status_code = status_code
+        self.source = source
 
 
 @dataclass
@@ -61,7 +62,7 @@ class GeminiProvider:
     @lru_cache(maxsize=1)
     def _client(self):
         if not GEMINI_API_KEY:
-            raise AIProviderError(self.name, "GEMINI_API_KEY is not configured.")
+            raise AIProviderError(self.name, "GEMINI_API_KEY is not configured.", source="configuration")
         client = genai.Client(
             api_key=GEMINI_API_KEY,
             http_options=types.HttpOptions(
@@ -110,16 +111,16 @@ class GeminiProvider:
                 fixed_cost_usd=fixed_cost_usd,
             )
         except UsageLimitError as exc:
-            raise AIProviderError(self.name, str(exc), exc.status_code) from exc
+            raise AIProviderError(self.name, str(exc), exc.status_code, source=exc.source) from exc
 
     def generate_structured(self, prompt: str, schema: dict, *, feature: str = "syllabus_generation",
                             request_id: str | None = None, max_output_tokens: int | None = None) -> ProviderResult:
         if not isinstance(AI_MAX_OUTPUT_TOKENS, int) or isinstance(AI_MAX_OUTPUT_TOKENS, bool) or AI_MAX_OUTPUT_TOKENS < 1:
-            raise AIProviderError(self.name, "The configured response token limit is invalid.", 503)
+            raise AIProviderError(self.name, "The configured response token limit is invalid.", 503, source="configuration")
         if max_output_tokens is not None and (
             not isinstance(max_output_tokens, int) or isinstance(max_output_tokens, bool) or max_output_tokens < 1
         ):
-            raise AIProviderError(self.name, "The structured response token limit is invalid.", 503)
+            raise AIProviderError(self.name, "The structured response token limit is invalid.", 503, source="configuration")
         output_limit = AI_MAX_OUTPUT_TOKENS if max_output_tokens is None else min(AI_MAX_OUTPUT_TOKENS, max_output_tokens)
         content = (
             f"{prompt}\nReturn only a valid JSON object, without Markdown fences or commentary."
@@ -146,7 +147,7 @@ class GeminiProvider:
                     ),
                 )
             except httpx.TimeoutException as exc:
-                raise AIProviderError(self.name, "Gemini request exceeded its 120-second request deadline.", 504) from exc
+                raise AIProviderError(self.name, "Gemini request exceeded its 120-second request deadline.", 504, source="provider_timeout") from exc
             except AIProviderError:
                 raise
             except Exception as exc:
@@ -163,7 +164,7 @@ class GeminiProvider:
                     "tutor": "Gemini tutor",
                     "mock_test": "Gemini mock-test question generation",
                 }.get(feature, "Gemini syllabus generation")
-                raise AIProviderError(self.name, f"{label} failed ({detail}).", status_code) from exc
+                raise AIProviderError(self.name, f"{label} failed ({detail}).", status_code, source="provider") from exc
             text = getattr(response, "text", None)
             usage = self._usage_data(getattr(response, "usage_metadata", None))
             if not text:

@@ -305,15 +305,18 @@ class StudyPlannerEndpointTests(unittest.TestCase):
 
         self.assertEqual(self.client.patch("/api/planner/sessions/secret", json={"note": "changed"}).status_code, 404)
 
-    def test_weekly_goal_persists_and_can_be_cleared(self):
-        saved = self.client.put("/api/planner/weekly-goal", json={"weeklyTarget": 5})
-        self.assertEqual(saved.json()["weeklyTarget"], 5)
-        self.assertEqual(self.database.docs["users/learner-a/learningSettings/planner"]["weeklyLessonTarget"], 5)
+    def test_legacy_setting_is_preserved_and_target_endpoint_is_removed(self):
+        path = "users/learner-a/learningSettings/planner"
+        self.database.docs[path] = {"weeklyLessonTarget": 5, "otherSetting": "keep"}
 
-        self.assertEqual(self.overview().json()["weeklyTarget"], 5)
-        cleared = self.client.put("/api/planner/weekly-goal", json={"weeklyTarget": None})
-        self.assertIsNone(cleared.json()["weeklyTarget"])
-        self.assertNotIn("weeklyLessonTarget", self.database.docs["users/learner-a/learningSettings/planner"])
+        overview = self.overview()
+        self.assertEqual(overview.status_code, 200)
+        self.assertNotIn("weeklyTarget", overview.json())
+        self.assertEqual(self.database.docs[path], {"weeklyLessonTarget": 5, "otherSetting": "keep"})
+
+        response = self.client.put("/api/planner/weekly-goal", json={"weeklyTarget": 8})
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(self.database.docs[path], {"weeklyLessonTarget": 5, "otherSetting": "keep"})
 
 
 if __name__ == "__main__":

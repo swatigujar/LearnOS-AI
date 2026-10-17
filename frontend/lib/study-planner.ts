@@ -37,15 +37,10 @@ export type CompletionActivity = {
   completedAt: string;
 };
 
-export type WeeklyActivityDay = { date: string; completedLessons: number };
-
 export type PlannerOverview = {
   courses: PlannerCourse[];
   sessions: PlannerSession[];
   completions: CompletionActivity[];
-  weeklyTarget: number | null;
-  weeklyCompletedLessons: number;
-  weeklyActivity: WeeklyActivityDay[];
 };
 
 export type SessionDraft = {
@@ -77,12 +72,6 @@ export function isSupportedTimeZone(timeZone: string) {
   } catch {
     return false;
   }
-}
-
-export function weeklyActivityUnavailableMessage(_error?: unknown) {
-  return _error == null
-    ? "Weekly activity could not be loaded."
-    : "Weekly activity is unavailable right now. Your lesson total could not be loaded.";
 }
 
 export function dateKeyInTimeZone(value: Date | string, timeZone: string) {
@@ -255,8 +244,4 @@ export async function updatePlannerSessionStatus(token: string, sessionId: strin
 
 export async function deletePlannerSession(token: string, sessionId: string) {
   return requestPlanner<void>(token, `sessions/${encodeURIComponent(sessionId)}`, "DELETE");
-}
-
-export async function saveWeeklyTarget(token: string, weeklyTarget: number | null) {
-  return requestPlanner<{ weeklyTarget: number | null }>(token, "weekly-goal", "PUT", { weeklyTarget });
 }
