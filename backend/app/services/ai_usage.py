@@ -88,11 +88,12 @@ def _reserve(transaction, daily_ref, monthly_ref, request_ref, record, request_l
         raise UsageLimitError("Gemini usage records need review; AI requests are disabled.", 503)
     if not isinstance(current_estimated_cost, (int, float)) or not math.isfinite(current_estimated_cost) or current_estimated_cost < 0:
         raise UsageLimitError("Gemini cost records need review; AI requests are disabled.", 503)
-    if current_requests >= request_limit:
-        raise UsageLimitError("The configured daily Gemini request limit has been reached.")
+    # Daily and monthly cap enforcement is temporarily disabled by request.
+    # if current_requests >= request_limit:
+    #     raise UsageLimitError("The configured daily Gemini request limit has been reached.")
     next_cost = round(float(current_estimated_cost) + record["reserved_estimated_cost_usd"], 8)
-    if next_cost > cost_limit:
-        raise UsageLimitError("The configured monthly Gemini estimated-cost limit has been reached.")
+    # if next_cost > cost_limit:
+    #     raise UsageLimitError("The configured monthly Gemini estimated-cost limit has been reached.")
 
     transaction.create(request_ref, record)
     transaction.set(daily_ref, {
@@ -318,8 +319,8 @@ def run_tracked_provider_call(
     """Reserve budget before invoking Gemini, then settle from returned metadata."""
     if not request_id or len(request_id) > 160:
         raise UsageLimitError("A valid Gemini request identifier is required.", 503)
-    if AI_DAILY_REQUEST_LIMIT <= 0 or not math.isfinite(AI_MONTHLY_ESTIMATED_COST_LIMIT_USD) or AI_MONTHLY_ESTIMATED_COST_LIMIT_USD <= 0:
-        raise UsageLimitError("Gemini request limits are invalid; AI requests are disabled.", 503)
+    # if AI_DAILY_REQUEST_LIMIT <= 0 or not math.isfinite(AI_MONTHLY_ESTIMATED_COST_LIMIT_USD) or AI_MONTHLY_ESTIMATED_COST_LIMIT_USD <= 0:
+    #     raise UsageLimitError("Gemini request limits are invalid; AI requests are disabled.", 503)
     output_cap = AI_MAX_OUTPUT_TOKENS if max_output_tokens is None else max_output_tokens
     if not isinstance(output_cap, int) or isinstance(output_cap, bool) or output_cap < 1:
         raise UsageLimitError("Gemini output-token limit is invalid; AI requests are disabled.", 503)
