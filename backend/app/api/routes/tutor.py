@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from logging import getLogger
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from firebase_admin import firestore
@@ -23,6 +24,7 @@ from app.services.notes import generate_topic_notes, note_document_id
 from app.services.tutor import confirm_concept, current_concept_taught, ensure_topic_available, ordered_topics, teach
 
 router = APIRouter(prefix="/api/tutor", tags=["tutor"])
+logger = getLogger(__name__)
 
 
 def _context(course_id, user):
@@ -123,7 +125,7 @@ def _live_course_context(context, topic_id):
         raise HTTPException(409, "Resume the lesson and wait for tutor actions to finish before starting live voice.")
     module, topic = ensure_topic_available(syllabus, state, topic_id)
     topic_ref = course_ref.collection("tutorTopics").document(topic_id)
-    conversation = TutorConversation.model_validate(topic_ref.get().to_dict() or {}).model_dump()
+    conversation = TutorConversation.model_validate(topic_ref.get().to_dict() or {})
     topic_status = state.get("topic_status", {})
     progress = [
         {
@@ -194,11 +196,11 @@ def _live_course_context(context, topic_id):
                 "role": message.role,
                 "text": (_reply_history_text(message.reply) if message.reply else message.text)[:2000],
             }
-            for message in conversation["messages"][-10:]
+            for message in conversation.messages[-10:]
         ],
         "concept_plan": {
-            "concepts": conversation["concepts"],
-            "current_index": conversation["concept_index"],
+            "concepts": conversation.concepts,
+            "current_index": conversation.concept_index,
         },
         "recent_course_learning_history": learning_history[-12:],
     }
@@ -498,6 +500,7 @@ def create_live_tutor_session(request: TutorLiveSessionRequest,
         status = exc.status_code if exc.status_code in (429, 503, 504) else 502
         raise HTTPException(status, "Gemini Live could not start a teaching session.") from exc
     except Exception as exc:
+        logger.exception("Live tutor context could not be loaded.")
         raise HTTPException(503, "Live tutor context could not be loaded.") from exc
 
 

@@ -392,6 +392,22 @@ class TutorEndpointTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         create_token.assert_not_called()
 
+    def test_live_session_loads_existing_chat_and_voice_messages(self):
+        self.action("start")
+        self.live_transcript([
+            {"role": "user", "text": "Can we review values?"},
+            {"role": "assistant", "text": "A value is data. Can you give an example?"},
+        ])
+        with patch.object(tutor_route, "GEMINI_LIVE_ENABLED", True), \
+                patch.object(tutor_route, "create_live_access_token", return_value="one-use-token") as token:
+            response = self.client.post("/api/tutor/live/session", json={
+                "courseId": "course-123", "topicId": "module-1-topic-1",
+            })
+        self.assertEqual(response.status_code, 200, response.text)
+        instruction = token.call_args.args[0]
+        self.assertIn("A value is a piece of data.", instruction)
+        self.assertIn("Can we review values?", instruction)
+
     def test_idempotency_and_pause(self):
         payload = {"courseId": "course-123", "topicId": "module-1-topic-1", "revision": 0,
                    "operationId": "a" * 32, "action": "start"}

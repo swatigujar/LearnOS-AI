@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { ArrowDown, Check, Mic, MicOff, Pause, Play, PhoneOff, RotateCcw, Send } from "lucide-react";
 import { useLiveTutor } from "@/lib/tutor-live";
 import { useAuth } from "@/lib/auth-context";
-import type { TutorReply, TutorVisual, useTutor } from "@/lib/tutor";
+import type { TutorReply, TutorState, TutorVisual, useTutor } from "@/lib/tutor";
 
 function Visual({ visual }: { visual: TutorVisual }) {
   return (
@@ -19,6 +19,10 @@ function Visual({ visual }: { visual: TutorVisual }) {
 
 function Explanation({ reply }: { reply: TutorReply }) {
   return <div className="max-w-prose space-y-3 text-sm leading-6 text-[#34423c]"><h4 className="text-base font-semibold leading-6 text-[#1b302b]">{reply.concept_title}</h4><p className="whitespace-pre-wrap">{reply.explanation}</p><div><h5 className="mb-1 font-semibold text-[#1b302b]">Example</h5><p className="whitespace-pre-wrap">{reply.example}</p></div>{reply.visuals.map((visual, index) => <Visual key={index} visual={visual} />)}<p className="rounded-md bg-[#f0f7f1] p-3 font-medium text-[#1b6657]">{reply.check_question}</p></div>;
+}
+
+function ConversationMessage({ message }: { message: TutorState["conversation"]["messages"][number] }) {
+  return <article className={message.role === "user" ? "ml-auto max-w-[90%] break-words rounded-lg border border-[#dce9df] bg-[#eaf4ef] p-3 sm:p-4" : "min-w-0 max-w-full break-words rounded-lg border border-[#e0e2d9] bg-white p-3 shadow-sm sm:p-4"}><p className="mb-2 text-xs font-semibold text-[#68736d]">{message.role === "user" ? "You" : "LearnOS Tutor"}{message.channel === "voice" ? " · Live voice" : ""}</p><div className="min-w-0 break-words">{message.reply ? <Explanation reply={message.reply} /> : <p className="whitespace-pre-wrap text-sm leading-6 text-[#34423c]">{message.text}</p>}</div></article>;
 }
 
 export function AiTutor({ courseId, controller, lesson, nextTopicId, moduleReady }: {
@@ -40,6 +44,13 @@ export function AiTutor({ courseId, controller, lesson, nextTopicId, moduleReady
   const conversationArea = useRef<HTMLDivElement>(null);
   const live = useLiveTutor(courseId, lesson?.topic_id ?? "", acceptSavedState);
   const messages = state?.conversation.messages ?? [];
+  let currentExchangeStart = 0;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index].role === "assistant") {
+      currentExchangeStart = index > 0 && messages[index - 1].role === "user" ? index - 1 : index;
+      break;
+    }
+  }
   const paused = state?.paused ?? false;
   const completed = !!lesson && state?.topic_status[lesson.topic_id] === "completed";
   const disabled = loading || busy || !state || paused;
@@ -91,7 +102,8 @@ export function AiTutor({ courseId, controller, lesson, nextTopicId, moduleReady
     <div aria-label="Tutor conversation" aria-live="polite" aria-relevant="additions" className="max-h-[32rem] min-h-48 min-w-0 flex-1 space-y-4 overflow-x-hidden overflow-y-auto px-4 py-5 sm:px-5 lg:max-h-none lg:min-h-0" ref={conversationArea} role="log">
       {loading && <p className="text-sm text-[#68736d]">Loading saved conversation and progress...</p>}
       {!loading && messages.length === 0 && <div className="py-5"><p className="font-semibold">Hi{learnerName ? ` ${learnerName.split(/\s+/)[0]}` : ""}! {lesson ? `Ready to learn ${lesson.title} together?` : "Your tutor needs a saved syllabus."}</p><p className="mt-2 text-sm text-[#68736d]">We’ll take one small step at a time. Ask questions whenever you like.</p></div>}
-      {messages.map((message, index) => <article className={message.role === "user" ? "ml-auto max-w-[90%] break-words rounded-lg border border-[#dce9df] bg-[#eaf4ef] p-3 sm:p-4" : "min-w-0 max-w-full break-words rounded-lg border border-[#e0e2d9] bg-white p-3 shadow-sm sm:p-4"} key={index}><p className="mb-2 text-xs font-semibold text-[#68736d]">{message.role === "user" ? "You" : "LearnOS Tutor"}{message.channel === "voice" ? " · Live voice" : ""}</p><div className="min-w-0 break-words">{message.reply ? <Explanation reply={message.reply} /> : <p className="whitespace-pre-wrap text-sm leading-6 text-[#34423c]">{message.text}</p>}</div></article>)}
+      {currentExchangeStart > 0 && <details className="rounded-md border border-[#e0e2d9] bg-[#f6f8f5] p-3" key={`${courseId}-${lesson?.topic_id}`}><summary className="cursor-pointer text-xs font-semibold text-[#586761]">Earlier conversation ({currentExchangeStart} messages)</summary><div className="mt-3 space-y-4">{messages.slice(0, currentExchangeStart).map((message, index) => <ConversationMessage key={index} message={message} />)}</div></details>}
+      {messages.slice(currentExchangeStart).map((message, index) => <ConversationMessage key={currentExchangeStart + index} message={message} />)}
       {pendingMessage && <article className="ml-auto max-w-[90%] rounded-md border border-[#dce9df] bg-[#eaf4ef] p-3"><p className="mb-2 text-xs font-semibold text-[#68736d]">You · Sending</p><p className="whitespace-pre-wrap break-words text-sm">{pendingMessage}</p></article>}
       {live.partialTranscript && <article className="max-w-full rounded-md border border-[#d9ddd5] bg-white/70 p-3"><p className="mb-2 text-xs font-semibold text-[#68736d]">Live transcript</p><p className="whitespace-pre-wrap break-words text-sm leading-6 text-[#34423c]">{live.partialTranscript}</p></article>}
       {busy && <p className="text-sm text-[#68736d]" role="status">Tutor request in progress. Your saved progress is safe.</p>}

@@ -42,7 +42,15 @@ not vector search or external-resource retrieval. Resource pages are not fetched
 Chat produces a validated concept plan and teaches one short step at a time.
 It asks a check question and waits for a learner response before offering the
 confirmation control. Only explicit learner confirmation advances the concept
-position. A topic completes after its last concept is confirmed; a module
+position. The backend records which concept received a learner response and
+rejects confirmation without it, including for older conversations that only
+have a taught marker. Repeated Start requests do not generate another reply
+while the current concept is waiting for an answer. Asking for another
+explanation does not count as answering the question.
+The tutor shows the latest exchange by default. Earlier saved explanations
+remain available under the collapsed Earlier conversation section; they are
+not replayed as a new lesson or deleted.
+A topic completes after its last concept is confirmed; a module
 completes only after all topics complete and the learner confirms the module.
 This remains self-reported understanding, not independently assessed mastery.
 Later topics remain locked; completed topics can be revisited or repeated
@@ -103,8 +111,14 @@ configured bucket.
 Voice uses Gemini Live for real-time microphone input, native audio replies,
 learner interruptions, and typed questions within the same session. The browser
 connects directly to Gemini with a one-use token issued after Firebase
-authentication; audio is not stored by LearnOS. Input and output text
-transcripts are saved alongside course tutor history and are used as relevant
+authentication; audio is not stored by LearnOS.
+Token provisioning uses the REST `bidiGenerateContentSetup` field to lock the
+model and teaching configuration, rather than the SDK-only
+`liveConnectConstraints` field. The live teaching instructions require waiting
+for a learner response and explicit permission, never treating silence as consent.
+Live startup loads saved chat and voice messages using the validated conversation
+model, including when a learner switches from an existing chat lesson to voice.
+Input and output text transcripts are saved alongside course tutor history and are used as relevant
 learning context later. HTTPS or localhost, microphone permission, and browser
 AudioWorklet support are required; chat remains available if live voice cannot
 connect. A Live session is limited by Gemini's session lifetime and can be
