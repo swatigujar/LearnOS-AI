@@ -15,6 +15,7 @@ import {
 } from "@/lib/learning-data";
 import { createProgressLoader, fetchUserProgress, selectContinueCourse, type CourseProgress, type ProgressSummary } from "@/lib/progress";
 import { StudyPlanner, WeeklyLearningInsights } from "@/components/study-planner";
+import { PracticeCenter } from "@/components/practice-center";
 
 const sections = [
   "Dashboard",
@@ -483,6 +484,8 @@ export default function DashboardPage() {
             </div>
           ) : section === "Study Planner" ? (
             <StudyPlanner />
+          ) : section === "Practice" ? (
+            <PracticeCenter />
           ) : (
             <section className="rounded-lg border border-[#e0e2d9] bg-white p-7 sm:p-9">
               <p className="text-xs font-bold uppercase tracking-[0.16em] text-[#d16445]">Coming next</p>

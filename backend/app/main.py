@@ -8,6 +8,7 @@ from app.api.routes.syllabus import router as syllabus_router
 from app.api.routes.tutor import router as tutor_router
 from app.api.routes.mock_test import router as mock_test_router
 from app.api.routes.notes import router as notes_router
+from app.api.routes.practice import router as practice_router
 
 app = FastAPI(title="LearnOS AI API")
 app.include_router(syllabus_router)
@@ -17,6 +18,7 @@ app.include_router(study_planner_router)
 app.include_router(tutor_router)
 app.include_router(mock_test_router)
 app.include_router(notes_router)
+app.include_router(practice_router)
 
 
 @app.exception_handler(HTTPException)
