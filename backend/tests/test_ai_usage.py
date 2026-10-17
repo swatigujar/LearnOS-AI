@@ -96,7 +96,8 @@ class AIUsageLimitTests(unittest.TestCase):
             },
             request_id="provider-response-123",
         )
-        with self.assertLogs(ai_usage.logger, level="INFO") as captured:
+        with patch.object(ai_usage, "USD_TO_INR_RATE", "90"), \
+                self.assertLogs(ai_usage.logger, level="INFO") as captured:
             self.call("operation-1", lambda: result)
         usage_records = [value for path, value in self.database.docs.items() if "/requests/" in path]
         self.assertEqual(len(usage_records), 1)
@@ -111,6 +112,33 @@ class AIUsageLimitTests(unittest.TestCase):
         self.assertEqual(record["estimated_cost_usd"], 0.000045)
         self.assertNotIn("private learner question", repr(record))
         self.assertNotIn("private learner question", " ".join(item.getMessage() for item in captured.records))
+        usage_log = next(item.getMessage() for item in captured.records if "GEMINI_USAGE" in item.getMessage())
+        self.assertIn("'input_tokens': 20", usage_log)
+        self.assertIn("'output_tokens': 5", usage_log)
+        self.assertIn("'thinking_tokens': 3", usage_log)
+        self.assertIn("'estimated_cost_inr': 0.00405", usage_log)
+        self.assertIn("'input_token_cost_inr_estimate': 0.00135", usage_log)
+
+    def test_live_usage_logs_modality_costs_and_session_reserve_in_rupees(self):
+        usage = {
+            "input_tokens": 100,
+            "output_tokens": 40,
+            "thinking_tokens": 10,
+            "total_tokens": 150,
+            "prompt_tokens_details": [{"modality": "AUDIO", "token_count": 100}],
+            "response_tokens_details": [{"modality": "AUDIO", "token_count": 40}],
+        }
+        with patch.object(ai_usage, "USD_TO_INR_RATE", "90"), \
+                self.assertLogs(ai_usage.logger, level="INFO") as captured:
+            ai_usage.log_live_usage(
+                request_id="live-turn-1", model="gemini-3.8-live", usage=usage,
+                session_reserved_cost_usd=2.0,
+            )
+        usage_log = next(item.getMessage() for item in captured.records if "GEMINI_LIVE_USAGE" in item.getMessage())
+        self.assertIn("'input_tokens': 100", usage_log)
+        self.assertIn("'output_tokens': 40", usage_log)
+        self.assertIn("'estimated_token_cost_inr': 0.07425", usage_log)
+        self.assertIn("'session_reserved_cost_inr': 180.0", usage_log)
 
     def test_duplicate_operation_id_never_invokes_provider_twice(self):
         result = SimpleNamespace(usage=None, request_id=None)
@@ -150,8 +178,10 @@ class AIUsageLimitTests(unittest.TestCase):
         self.assertEqual(month_record["reserved_estimated_cost_usd"], request_record["reserved_estimated_cost_usd"])
 
     def test_failed_call_records_failure_without_zeroing_unknown_cost(self):
-        with self.assertRaisesRegex(RuntimeError, "provider failure"):
-            self.call("provider-failed", lambda: (_ for _ in ()).throw(RuntimeError("provider failure")))
+        with patch.object(ai_usage, "USD_TO_INR_RATE", "90"), \
+                self.assertLogs(ai_usage.logger, level="INFO") as captured:
+            with self.assertRaisesRegex(RuntimeError, "provider failure"):
+                self.call("provider-failed", lambda: (_ for _ in ()).throw(RuntimeError("provider failure")))
         request_record = next(value for path, value in self.database.docs.items() if "/requests/" in path)
         month_record = next(value for path, value in self.database.docs.items() if "/monthly/" in path)
         self.assertEqual(request_record["status"], "failed")
@@ -159,6 +189,10 @@ class AIUsageLimitTests(unittest.TestCase):
         self.assertIsNone(request_record["estimated_cost_usd"])
         self.assertEqual(month_record["reserved_estimated_cost_usd"], request_record["reserved_estimated_cost_usd"])
         self.assertNotIn("provider failure", repr(request_record))
+        usage_log = next(item.getMessage() for item in captured.records if "GEMINI_USAGE" in item.getMessage())
+        self.assertIn("'status': 'failed'", usage_log)
+        self.assertIn("'input_tokens': None", usage_log)
+        self.assertIn("'reserved_estimated_cost_inr':", usage_log)
 
     def test_missing_pricing_blocks_before_provider_call(self):
         invoke = Mock()

@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timedelta, timezone
 from logging import getLogger
 
@@ -16,9 +17,10 @@ from app.api.schemas.tutor import (
     TutorMessage,
     TutorStateResponse,
 )
-from app.core.config import GEMINI_LIVE_ENABLED, GEMINI_LIVE_MODEL
+from app.core.config import GEMINI_LIVE_ENABLED, GEMINI_LIVE_MODEL, GEMINI_LIVE_SESSION_COST_RESERVE_USD
 from app.core.firebase import get_firestore_client
 from app.services.ai_provider import AIProviderError
+from app.services.ai_usage import log_live_usage
 from app.services.live_tutor import build_live_instruction, create_live_access_token, live_client_config
 from app.services.notes import generate_topic_notes, note_document_id
 from app.services.tutor import confirm_concept, current_concept_taught, ensure_topic_available, ordered_topics, teach
@@ -57,7 +59,7 @@ def _context(course_id, user):
 def _initial(course, syllabus):
     return {"syllabus_version": course["syllabusVersion"], "active_topic_id": ordered_topics(syllabus)[0][1].topic_id,
             "paused": False, "revision": 0, "topic_status": {}, "confirmed_modules": [],
-            "operations": [], "pending": None}
+            "operations": [], "pending": None, "progress_epoch": 0}
 
 
 def _busy(state):
@@ -72,7 +74,35 @@ def _state(state_ref, course, syllabus, transaction=None):
     return state
 
 
-def _recent_learning_history(course_ref, limit=12):
+def _conversation(topic_ref, state, transaction=None):
+    saved = topic_ref.get(transaction=transaction).to_dict() or {}
+    if saved.get("progress_epoch", 0) != state.get("progress_epoch", 0):
+        return TutorConversation().model_dump()
+    saved.pop("progress_epoch", None)
+    return TutorConversation.model_validate(saved).model_dump()
+
+
+def _conversation_document(conversation, state):
+    return {**conversation, "progress_epoch": state.get("progress_epoch", 0)}
+
+
+def _requested_topic_id(syllabus, message, active_topic_id):
+    normalized = re.sub(r"[^\w]+", " ", message.casefold(), flags=re.UNICODE).strip()
+    if not re.search(
+        r"\b(?:learn|teach me|switch|go to|move to|study|estudiar|aprender|apprendre|étudier|lernen)\b"
+        r"|सीख|पढ़|शुरू|बदल|शिक|अभ्यास",
+        normalized,
+    ):
+        return None
+    matches = []
+    for _, topic in ordered_topics(syllabus):
+        title = re.sub(r"[^\w]+", " ", topic.title.casefold(), flags=re.UNICODE).strip()
+        if topic.topic_id != active_topic_id and title and title in normalized:
+            matches.append(topic)
+    return max(matches, key=lambda topic: len(topic.title)).topic_id if matches else None
+
+
+def _recent_learning_history(course_ref, progress_epoch=0, limit=12):
     try:
         snapshots = course_ref.collection("tutorHistory").order_by(
             "createdAt", direction=firestore.Query.DESCENDING
@@ -83,6 +113,8 @@ def _recent_learning_history(course_ref, limit=12):
     history = []
     for snapshot in reversed(snapshots):
         item = snapshot.to_dict() or {}
+        if item.get("progressEpoch", 0) != progress_epoch:
+            continue
         text = item.get("text")
         if isinstance(text, str) and text.strip():
             history.append({
@@ -108,12 +140,24 @@ def _course_progress_summary(context):
 
 
 def _reply_history_text(reply):
+    if reply.intent == "redirect":
+        return reply.redirect_message[:4000]
     return "\n".join((
         reply.concept_title,
         reply.explanation,
         f"Example: {reply.example}",
         f"Question asked: {reply.check_question}",
     ))[:4000]
+
+
+def _friendly_ai_error(status):
+    if status == 429:
+        return "The tutor has reached its AI request limit for now. Your progress is saved. Please try again later."
+    if status == 503:
+        return "The tutor is temporarily unavailable. Your progress is saved. Please try again shortly."
+    if status == 504:
+        return "The tutor took longer than expected to respond. Your progress is saved. Please try again."
+    return "I couldn't prepare a reliable tutor response just now. Your progress is saved. Please try again."
 
 
 def _live_course_context(context, topic_id):
@@ -125,7 +169,7 @@ def _live_course_context(context, topic_id):
         raise HTTPException(409, "Resume the lesson and wait for tutor actions to finish before starting live voice.")
     module, topic = ensure_topic_available(syllabus, state, topic_id)
     topic_ref = course_ref.collection("tutorTopics").document(topic_id)
-    conversation = TutorConversation.model_validate(topic_ref.get().to_dict() or {})
+    conversation = TutorConversation.model_validate(_conversation(topic_ref, state))
     topic_status = state.get("topic_status", {})
     progress = [
         {
@@ -135,7 +179,7 @@ def _live_course_context(context, topic_id):
         }
         for item in syllabus.modules for lesson in item.topics
     ]
-    learning_history = _recent_learning_history(course_ref)
+    learning_history = _recent_learning_history(course_ref, state.get("progress_epoch", 0))
     if not learning_history:
         topic_index = next(index for index, (_, item) in enumerate(ordered_topics(syllabus))
                            if item.topic_id == topic_id)
@@ -219,7 +263,7 @@ def _response(context):
     _, course_ref, _, course, syllabus, name = context
     state = _state(course_ref.collection("tutor").document("state"), course, syllabus)
     topic_ref = course_ref.collection("tutorTopics").document(state["active_topic_id"])
-    conversation = TutorConversation.model_validate(topic_ref.get().to_dict() or {})
+    conversation = TutorConversation.model_validate(_conversation(topic_ref, state))
     statuses = {topic.topic_id: state["topic_status"].get(topic.topic_id, "not_started")
                 for _, topic in ordered_topics(syllabus)}
     modules = {module.module_id: (
@@ -228,6 +272,7 @@ def _response(context):
     ) for module in syllabus.modules}
     return TutorStateResponse(
         learner_name=name, active_topic_id=state["active_topic_id"], syllabus_version=state["syllabus_version"],
+        progress_epoch=state.get("progress_epoch", 0),
         revision=state["revision"], paused=state["paused"], busy=_busy(state), topic_status=statuses,
         module_status=modules, conversation=conversation,
         can_confirm=bool(conversation.concepts and conversation.taught_index == conversation.concept_index
@@ -243,7 +288,7 @@ def _prepare(transaction, context, request):
     topic_ref = course_ref.collection("tutorTopics").document(request.topicId)
     _check_course(transaction, course_ref, legacy_ref, course["syllabusVersion"])
     state = _state(state_ref, course, syllabus, transaction)
-    conversation = TutorConversation.model_validate(topic_ref.get(transaction=transaction).to_dict() or {}).model_dump()
+    conversation = _conversation(topic_ref, state, transaction)
     queue_notes = False
     if request.operationId in state["operations"]:
         return None
@@ -255,12 +300,53 @@ def _prepare(transaction, context, request):
         module, topic = ensure_topic_available(syllabus, state, request.topicId)
         if request.action not in ("select", "pause", "resume") and request.topicId != state["active_topic_id"]:
             raise ValueError("Select this topic before interacting with it.")
-        if state["paused"] and request.action not in ("resume", "select", "pause"):
+        if state["paused"] and request.action not in ("resume", "select", "pause", "restart"):
             raise ValueError("Resume the lesson before continuing.")
+        if request.action == "message":
+            target_id = _requested_topic_id(syllabus, request.message, state["active_topic_id"])
+            if target_id:
+                _, target_topic = ensure_topic_available(syllabus, state, target_id)
+                target_ref = course_ref.collection("tutorTopics").document(target_id)
+                target_conversation = _conversation(target_ref, state, transaction)
+                user_text = request.message.strip()
+                assistant_text = f"Sure, let's switch to {target_topic.title}. We can continue this lesson whenever you like."
+                conversation["messages"] = [*conversation["messages"],
+                    {"role": "user", "text": user_text, "reply": None, "channel": "chat"}][-20:]
+                target_conversation["messages"] = [*target_conversation["messages"],
+                    {"role": "assistant", "text": assistant_text, "reply": None, "channel": "chat"}][-20:]
+                transaction.create(course_ref.collection("tutorHistory").document(
+                    f"{request.operationId}-user"
+                ), {
+                    "topicId": request.topicId, "role": "user", "channel": "chat", "text": user_text,
+                    "progressEpoch": state.get("progress_epoch", 0), "createdAt": firestore.SERVER_TIMESTAMP,
+                })
+                transaction.create(course_ref.collection("tutorHistory").document(
+                    f"{request.operationId}-assistant"
+                ), {
+                    "topicId": target_id, "role": "assistant", "channel": "chat", "text": assistant_text,
+                    "progressEpoch": state.get("progress_epoch", 0), "createdAt": firestore.SERVER_TIMESTAMP,
+                })
+                transaction.set(topic_ref, _conversation_document(conversation, state))
+                transaction.set(target_ref, _conversation_document(target_conversation, state))
+                state["active_topic_id"] = target_id
+                state["pending"] = None
+                state["operations"] = [*state["operations"], request.operationId][-100:]
+                state["revision"] += 1
+                transaction.set(state_ref, state)
+                return {"tutor": None, "queue_notes": False}
         needs_model = request.action in ("start", "message", "explain", "repeat")
+        write_conversation = True
         if request.action == "select":
             state["active_topic_id"] = request.topicId
             needs_model = False
+        elif request.action == "restart":
+            state["active_topic_id"] = ordered_topics(syllabus)[0][1].topic_id
+            state["paused"] = False
+            state["topic_status"] = {}
+            state["confirmed_modules"] = []
+            state["progress_epoch"] = state.get("progress_epoch", 0) + 1
+            needs_model = False
+            write_conversation = False
         elif request.action == "pause":
             state["paused"] = True
         elif request.action == "resume":
@@ -314,6 +400,7 @@ def _prepare(transaction, context, request):
                     "role": "user",
                     "channel": "chat",
                     "text": request.message.strip(),
+                    "progressEpoch": state.get("progress_epoch", 0),
                     "createdAt": firestore.SERVER_TIMESTAMP,
                 })
             if state["topic_status"].get(request.topicId) != "completed":
@@ -324,7 +411,8 @@ def _prepare(transaction, context, request):
             state["operations"] = [*state["operations"], request.operationId][-100:]
         state["revision"] += 1
         transaction.set(state_ref, state)
-        transaction.set(topic_ref, conversation)
+        if write_conversation:
+            transaction.set(topic_ref, _conversation_document(conversation, state))
         return {
             "tutor": (module, topic, conversation) if needs_model else None,
             "queue_notes": queue_notes,
@@ -340,14 +428,18 @@ def _finish(transaction, context, request, reply):
     topic_ref = course_ref.collection("tutorTopics").document(request.topicId)
     _check_course(transaction, course_ref, legacy_ref, course["syllabusVersion"])
     state = _state(state_ref, course, syllabus, transaction)
-    conversation = TutorConversation.model_validate(topic_ref.get(transaction=transaction).to_dict() or {}).model_dump()
+    conversation = _conversation(topic_ref, state, transaction)
     if (state.get("pending") or {}).get("id") != request.operationId:
         raise HTTPException(409, "This tutor request is no longer active.")
     if reply is not None:
         conversation["concepts"] = reply.concepts
-        conversation["taught_index"] = (
-            conversation["concept_index"] if request.action == "message" else None
-        )
+        if reply.intent == "redirect":
+            conversation["taught_index"] = None
+            conversation["answered_index"] = None
+        else:
+            conversation["taught_index"] = (
+                conversation["concept_index"] if request.action == "message" else None
+            )
         if request.action == "explain":
             explain_text = "Please explain again differently."
             conversation["messages"].append({"role": "user", "text": explain_text, "reply": None})
@@ -369,9 +461,10 @@ def _finish(transaction, context, request, reply):
             "role": "assistant",
             "channel": "chat",
             "text": _reply_history_text(reply),
+            "progressEpoch": state.get("progress_epoch", 0),
             "createdAt": firestore.SERVER_TIMESTAMP,
         })
-        transaction.set(topic_ref, TutorConversation.model_validate(conversation).model_dump())
+        transaction.set(topic_ref, _conversation_document(conversation, state))
     state["pending"] = None
     state["operations"] = [*state["operations"], request.operationId][-100:]
     state["revision"] += 1
@@ -386,7 +479,8 @@ def get_tutor_state(courseId: str = Query(min_length=1, max_length=150, pattern=
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(503, "Tutor state could not be loaded. Your saved progress is unchanged.") from exc
+        logger.exception("Tutor state could not be loaded.")
+        raise HTTPException(503, "I couldn't load your saved lesson just now. Your progress is safe; please refresh and try again.") from exc
 
 
 @router.post("/action", response_model=TutorStateResponse)
@@ -401,7 +495,8 @@ def tutor_action(request: TutorAction, background_tasks: BackgroundTasks,
         if prepared and prepared["tutor"]:
             module, topic, conversation = prepared["tutor"]
             try:
-                learner_history = _recent_learning_history(context[1])
+                state = _state(context[1].collection("tutor").document("state"), context[3], context[4])
+                learner_history = _recent_learning_history(context[1], state.get("progress_epoch", 0))
                 course_progress = _course_progress_summary(context)
                 reply = teach(context[4], module, topic, context[3], context[5], conversation,
                               request.action, request.message, request_id=request.operationId,
@@ -412,18 +507,18 @@ def tutor_action(request: TutorAction, background_tasks: BackgroundTasks,
                     status = exc.status_code if exc.status_code in (429, 503, 504) else 502
                     if "deadline" in str(exc):
                         status = 504
-                    detail = f"Gemini tutor request failed (HTTP {exc.status_code or status}). Your progress is saved."
+                    logger.warning("Tutor provider failed with status %s.", exc.status_code or status)
+                    detail = _friendly_ai_error(status)
                 elif isinstance(exc, ValidationError):
                     issues = "; ".join(
                         f"{'.'.join(str(part) for part in issue['loc']) or 'response'}: {issue['type']}"
                         for issue in exc.errors(include_input=False, include_context=False)[:3]
                     )
-                    status, detail = 502, f"Tutor reply failed validation ({issues}). Your progress is saved."
+                    logger.warning("Tutor reply failed validation: %s", issues)
+                    status, detail = 502, _friendly_ai_error(502)
                 else:
-                    reason = str(exc) if isinstance(exc, ValueError) and str(exc) in (
-                        "Tutor changed the active concept plan.", "Tutor returned an unverified resource URL."
-                    ) else "Invalid JSON or lesson response."
-                    status, detail = 502, f"Tutor reply rejected: {reason} Your progress is saved."
+                    logger.exception("Tutor response was rejected.")
+                    status, detail = 502, _friendly_ai_error(502)
                 raise HTTPException(status, detail) from exc
             _finish(context[0].transaction(), context, request, reply)
         return _response(context)
@@ -432,7 +527,8 @@ def tutor_action(request: TutorAction, background_tasks: BackgroundTasks,
     except (ValidationError, ValueError) as exc:
         raise HTTPException(409, "Saved tutor data needs review; no completion was recorded.") from exc
     except Exception as exc:
-        raise HTTPException(503, "Tutor state could not be saved. Reload before retrying; no automatic retry was made.") from exc
+        logger.exception("Tutor state could not be saved.")
+        raise HTTPException(503, "The tutor couldn't save this update. Your progress is safe. Reload and try again.") from exc
 
 
 @firestore.transactional
@@ -442,9 +538,11 @@ def _save_live_transcript(transaction, context, request):
     topic_ref = course_ref.collection("tutorTopics").document(request.topicId)
     _check_course(transaction, course_ref, legacy_ref, course["syllabusVersion"])
     state = _state(state_ref, course, syllabus, transaction)
-    conversation = TutorConversation.model_validate(topic_ref.get(transaction=transaction).to_dict() or {}).model_dump()
+    if request.progressEpoch != state.get("progress_epoch", 0):
+        raise HTTPException(409, "This live session belongs to an earlier course progress state.")
+    conversation = _conversation(topic_ref, state, transaction)
     if request.operationId in state.get("operations", []):
-        return
+        return False
     if _busy(state) or state["paused"]:
         raise HTTPException(409, "Resume the lesson and wait for tutor actions to finish before saving this transcript.")
     try:
@@ -463,6 +561,7 @@ def _save_live_transcript(transaction, context, request):
             "role": turn.role,
             "channel": "voice",
             "text": turn.text,
+            "progressEpoch": state.get("progress_epoch", 0),
             "createdAt": firestore.SERVER_TIMESTAMP,
         })
         has_learner_turn = has_learner_turn or turn.role == "user"
@@ -473,17 +572,25 @@ def _save_live_transcript(transaction, context, request):
         conversation["answered_index"] = conversation["concept_index"]
     if state["topic_status"].get(request.topicId) != "completed":
         state["topic_status"][request.topicId] = "in_progress"
+    requested_switch = _requested_topic_id(
+        syllabus,
+        " ".join(turn.text for turn in request.turns if turn.role == "user"),
+        state["active_topic_id"],
+    )
+    if requested_switch:
+        state["active_topic_id"] = requested_switch
     state["revision"] += 1
     state["operations"] = [*state.get("operations", []), request.operationId][-100:]
     transaction.set(state_ref, state)
-    transaction.set(topic_ref, TutorConversation.model_validate(conversation).model_dump())
+    transaction.set(topic_ref, _conversation_document(conversation, state))
+    return True
 
 
 @router.post("/live/session")
 def create_live_tutor_session(request: TutorLiveSessionRequest,
                               user: dict = Depends(get_current_user)):
     if not GEMINI_LIVE_ENABLED:
-        raise HTTPException(503, "Live tutoring is currently disabled.")
+        raise HTTPException(503, "Live voice is unavailable right now. You can continue learning in chat.")
     try:
         context = _context(request.courseId, user)
         tutor_context = _live_course_context(context, request.topicId)
@@ -498,10 +605,17 @@ def create_live_tutor_session(request: TutorLiveSessionRequest,
         raise
     except AIProviderError as exc:
         status = exc.status_code if exc.status_code in (429, 503, 504) else 502
-        raise HTTPException(status, "Gemini Live could not start a teaching session.") from exc
+        logger.warning("Live tutor provider failed with status %s.", exc.status_code or status)
+        if status == 429:
+            detail = "Live voice has reached its AI request limit for now. Your progress is safe; try again later or use chat."
+        elif status == 504:
+            detail = "Live voice took too long to connect. Your progress is safe; please try again."
+        else:
+            detail = "Live voice is temporarily unavailable. Your progress is safe; you can continue in chat."
+        raise HTTPException(status, detail) from exc
     except Exception as exc:
         logger.exception("Live tutor context could not be loaded.")
-        raise HTTPException(503, "Live tutor context could not be loaded.") from exc
+        raise HTTPException(503, "I couldn't prepare your live lesson just now. Your progress is safe; please try again or use chat.") from exc
 
 
 @router.post("/live/transcript", response_model=TutorStateResponse)
@@ -509,11 +623,20 @@ def save_live_tutor_transcript(request: TutorLiveTranscriptRequest,
                                user: dict = Depends(get_current_user)):
     try:
         context = _context(request.courseId, user)
-        _save_live_transcript(context[0].transaction(), context, request)
+        saved = _save_live_transcript(context[0].transaction(), context, request)
+        if saved and request.usage is not None:
+            log_live_usage(
+                request_id=request.operationId,
+                model=GEMINI_LIVE_MODEL,
+                usage=request.usage.model_dump(),
+                session_reserved_cost_usd=GEMINI_LIVE_SESSION_COST_RESERVE_USD,
+            )
         return _response(context)
     except HTTPException:
         raise
     except (ValidationError, ValueError) as exc:
-        raise HTTPException(409, "Saved tutor history needs review; no progress was changed.") from exc
+        logger.warning("Live tutor transcript validation failed: %s", type(exc).__name__)
+        raise HTTPException(409, "I couldn't save that voice turn. Your progress is safe; please retry or continue in chat.") from exc
     except Exception as exc:
-        raise HTTPException(503, "Tutor transcript could not be saved. Your saved progress is unchanged.") from exc
+        logger.exception("Live tutor transcript could not be saved.")
+        raise HTTPException(503, "I couldn't save that voice turn just now. Your saved progress is safe; retry or continue in chat.") from exc

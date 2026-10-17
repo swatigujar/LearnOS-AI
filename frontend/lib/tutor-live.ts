@@ -3,24 +3,62 @@
 import { GoogleGenAI, Modality, type LiveConnectConfig, type LiveServerMessage, type Session } from "@google/genai";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "@/lib/auth-context";
-import type { TutorState } from "@/lib/tutor";
+import { friendlyTutorError, friendlyTutorFailure, type TutorState } from "@/lib/tutor";
 
 type LiveStatus = "idle" | "connecting" | "connected";
 type LiveTurn = { role: "user" | "assistant"; text: string };
+type LiveUsageDetail = { modality: string; token_count: number };
+type LiveUsage = {
+  input_tokens: number | null;
+  output_tokens: number | null;
+  thinking_tokens: number | null;
+  total_tokens: number | null;
+  prompt_tokens_details: LiveUsageDetail[];
+  response_tokens_details: LiveUsageDetail[];
+};
 type PendingSave = {
   operationId: string;
   courseId: string;
   topicId: string;
+  progressEpoch: number;
   getIdToken: () => Promise<string>;
   turns: LiveTurn[];
+  usage: LiveUsage | null;
 };
 type LiveSessionResponse = { accessToken: string; model: string; config: LiveConnectConfig };
+const LIVE_CONNECT_TIMEOUT_MS = 60_000;
 
 function toBase64(buffer: ArrayBuffer) {
   const bytes = new Uint8Array(buffer);
   let binary = "";
   for (let index = 0; index < bytes.length; index += 1) binary += String.fromCharCode(bytes[index]);
   return btoa(binary);
+}
+
+function withTimeout<T>(operation: Promise<T>, timeoutMs: number, onLateValue?: (value: T) => void) {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const timer = window.setTimeout(() => {
+      settled = true;
+      const failure = new Error("Live tutor connection timed out.");
+      failure.name = "TimeoutError";
+      reject(failure);
+    }, Math.max(1, timeoutMs));
+    operation.then((value) => {
+      if (settled) {
+        onLateValue?.(value);
+        return;
+      }
+      settled = true;
+      window.clearTimeout(timer);
+      resolve(value);
+    }, (failure: unknown) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      reject(failure);
+    });
+  });
 }
 
 const workletSource = `
@@ -54,11 +92,14 @@ registerProcessor("learnos-pcm-processor", LearnOsPcmProcessor);
 export function useLiveTutor(
   courseId: string,
   topicId: string,
+  progressEpoch: number,
   onSavedState: (state: TutorState) => void,
 ) {
   const { user } = useAuth();
   const activeTargetRef = useRef({ courseId, topicId });
   const [status, setStatus] = useState<LiveStatus>("idle");
+  const [connectingSince, setConnectingSince] = useState<number | null>(null);
+  const [connectingSeconds, setConnectingSeconds] = useState(0);
   const [muted, setMuted] = useState(false);
   const [speaking, setSpeaking] = useState(false);
   const [partialTranscript, setPartialTranscript] = useState("");
@@ -74,6 +115,7 @@ export function useLiveTutor(
   const playbackTimeRef = useRef(0);
   const mutedRef = useRef(false);
   const inputTranscriptRef = useRef("");
+  const usageRef = useRef<LiveUsage | null>(null);
   const typedInputRef = useRef<string[]>([]);
   const outputTranscriptRef = useRef("");
   const saveQueueRef = useRef<PendingSave[]>([]);
@@ -88,6 +130,14 @@ export function useLiveTutor(
     activeTargetRef.current = { courseId, topicId };
     onSavedStateRef.current = onSavedState;
   }, [courseId, onSavedState, topicId]);
+
+  useEffect(() => {
+    if (connectingSince === null) return;
+    const updateElapsed = () => setConnectingSeconds(Math.floor((Date.now() - connectingSince) / 1000));
+    updateElapsed();
+    const timer = window.setInterval(updateElapsed, 1000);
+    return () => window.clearInterval(timer);
+  }, [connectingSince]);
 
   const savePendingTranscripts = useCallback(async () => {
     if (!saveQueueRef.current.length) return;
@@ -108,15 +158,17 @@ export function useLiveTutor(
             body: JSON.stringify({
               courseId: pending.courseId,
               topicId: pending.topicId,
+              progressEpoch: pending.progressEpoch,
               operationId: pending.operationId,
               turns: pending.turns,
+              ...(pending.usage ? { usage: pending.usage } : {}),
             }),
             cache: "no-store",
             keepalive: true,
             signal: AbortSignal.timeout(25_000),
           });
           const result = await response.json();
-          if (!response.ok) throw new Error(result.detail ?? "The live tutor transcript could not be saved.");
+          if (!response.ok) throw new Error(friendlyTutorError(response.status, result.detail));
           saveQueueRef.current.shift();
           if (activeRef.current) setHasUnsaved(saveQueueRef.current.length > 0);
           const target = activeTargetRef.current;
@@ -129,7 +181,7 @@ export function useLiveTutor(
         const failed = saveQueueRef.current[0];
         const target = activeTargetRef.current;
         if (activeRef.current && failed?.courseId === target.courseId && failed.topicId === target.topicId) {
-          setError(failure instanceof Error ? failure.message : "The live tutor transcript could not be saved.");
+          setError(friendlyTutorFailure(failure));
         }
       } finally {
         savingRef.current = false;
@@ -140,20 +192,22 @@ export function useLiveTutor(
     if (savingPromiseRef.current === saving) savingPromiseRef.current = null;
   }, []);
 
-  const enqueueTranscript = useCallback((turns: LiveTurn[]) => {
+  const enqueueTranscript = useCallback((turns: LiveTurn[], usage: LiveUsage | null) => {
     if (!user || !turns.length) return;
     saveQueueRef.current.push({
       operationId: crypto.randomUUID(),
       courseId,
       topicId,
+      progressEpoch,
       getIdToken: () => user.getIdToken(),
       turns,
+      usage,
     });
     if (activeRef.current) {
       setPartialTranscript("");
       setHasUnsaved(true);
     }
-  }, [courseId, topicId, user]);
+  }, [courseId, progressEpoch, topicId, user]);
 
   const queueCurrentTurn = useCallback(() => {
     const learnerText = [typedInputRef.current.join(" "), inputTranscriptRef.current]
@@ -162,10 +216,12 @@ export function useLiveTutor(
     const turns: LiveTurn[] = [];
     if (learnerText) turns.push({ role: "user", text: learnerText.slice(0, 2000) });
     if (tutorText) turns.push({ role: "assistant", text: tutorText.slice(0, 2000) });
+    const usage = usageRef.current;
     typedInputRef.current = [];
     inputTranscriptRef.current = "";
     outputTranscriptRef.current = "";
-    enqueueTranscript(turns);
+    usageRef.current = null;
+    enqueueTranscript(turns, usage);
   }, [enqueueTranscript]);
 
   const stopPlayback = useCallback(() => {
@@ -206,13 +262,30 @@ export function useLiveTutor(
 
   const handleMessage = useCallback((message: LiveServerMessage) => {
     if (!activeRef.current) return;
+    if (message.usageMetadata) {
+      const details = (items: typeof message.usageMetadata.promptTokensDetails) => (items ?? [])
+        .flatMap((item) => typeof item.modality === "string" && Number.isInteger(item.tokenCount) && item.tokenCount! >= 0
+          ? [{ modality: item.modality, token_count: item.tokenCount! }]
+          : []);
+      const metadata = message.usageMetadata;
+      usageRef.current = {
+        input_tokens: metadata.promptTokenCount ?? null,
+        output_tokens: metadata.responseTokenCount ?? null,
+        thinking_tokens: metadata.thoughtsTokenCount ?? null,
+        total_tokens: metadata.totalTokenCount ?? null,
+        prompt_tokens_details: details(metadata.promptTokensDetails),
+        response_tokens_details: details(metadata.responseTokensDetails),
+      };
+    }
     const content = message.serverContent;
     if (!content) return;
     if (content.interrupted) {
       stopPlayback();
       const interruptedTutorText = outputTranscriptRef.current.trim();
       if (interruptedTutorText) {
-        enqueueTranscript([{ role: "assistant", text: interruptedTutorText.slice(0, 2000) }]);
+        const usage = usageRef.current;
+        usageRef.current = null;
+        enqueueTranscript([{ role: "assistant", text: interruptedTutorText.slice(0, 2000) }], usage);
         void savePendingTranscripts();
       }
       outputTranscriptRef.current = "";
@@ -268,22 +341,31 @@ export function useLiveTutor(
     playbackContextRef.current = null;
     if (playback && playback.state !== "closed") await playback.close().catch(() => undefined);
     playbackSourcesRef.current.clear();
+    setConnectingSince(null);
     if (saveTranscript) await savePendingTranscripts();
   }, [queueCurrentTurn, savePendingTranscripts]);
 
   const connect = useCallback(async () => {
     if (!user || !topicId || status !== "idle") return false;
     const generation = ++connectionGenerationRef.current;
+    const deadline = Date.now() + LIVE_CONNECT_TIMEOUT_MS;
+    const remainingTime = () => Math.max(1, deadline - Date.now());
     const isCurrent = () => activeRef.current && connectionGenerationRef.current === generation;
     activeRef.current = true;
     setStatus("connecting");
+    setConnectingSeconds(0);
+    setConnectingSince(Date.now());
     setError("");
     if (saveQueueRef.current.length) void savePendingTranscripts();
     try {
       if (!navigator.mediaDevices?.getUserMedia || typeof AudioWorkletNode === "undefined") {
         throw new Error("Live voice needs a supported browser and microphone. You can continue in chat.");
       }
-      const microphone = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const microphone = await withTimeout(
+        navigator.mediaDevices.getUserMedia({ audio: true }),
+        Math.min(30_000, remainingTime()),
+        (lateMicrophone) => lateMicrophone.getTracks().forEach((track) => track.stop()),
+      );
       if (!isCurrent()) {
         microphone.getTracks().forEach((track) => track.stop());
         return false;
@@ -292,7 +374,7 @@ export function useLiveTutor(
       const capture = new AudioContext({ sampleRate: 16000 });
       microphoneContextRef.current = capture;
       const workletUrl = URL.createObjectURL(new Blob([workletSource], { type: "application/javascript" }));
-      try { await capture.audioWorklet.addModule(workletUrl); }
+      try { await withTimeout(capture.audioWorklet.addModule(workletUrl), remainingTime()); }
       finally { URL.revokeObjectURL(workletUrl); }
       if (!isCurrent()) return false;
       const source = capture.createMediaStreamSource(microphone);
@@ -313,7 +395,7 @@ export function useLiveTutor(
       };
       const playback = new AudioContext({ sampleRate: 24000 });
       playbackContextRef.current = playback;
-      await Promise.all([capture.resume(), playback.resume()]);
+      await withTimeout(Promise.all([capture.resume(), playback.resume()]), remainingTime());
       if (!isCurrent()) return false;
 
       const idToken = await user.getIdToken();
@@ -323,18 +405,22 @@ export function useLiveTutor(
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
         body: JSON.stringify({ courseId, topicId }),
         cache: "no-store",
-        signal: AbortSignal.timeout(25_000),
+        signal: AbortSignal.timeout(Math.min(25_000, remainingTime())),
       });
       if (!isCurrent()) return false;
       const tokenResult = await tokenResponse.json();
       if (!isCurrent()) return false;
-      if (!tokenResponse.ok) throw new Error(tokenResult.detail ?? "The live tutor could not start.");
+      if (!tokenResponse.ok) throw new Error(friendlyTutorError(tokenResponse.status, tokenResult.detail));
       const details = tokenResult as LiveSessionResponse;
       const ai = new GoogleGenAI({ apiKey: details.accessToken });
       let connectedSession: Session | null = null;
       let connectionReady = false;
       const isConnectedSession = () => connectionReady && sessionRef.current === connectedSession;
-      const session = await ai.live.connect({
+      let rejectPendingConnection: (failure: Error) => void = () => {};
+      const connectionFailure = new Promise<never>((_, reject) => {
+        rejectPendingConnection = reject;
+      });
+      const session = await withTimeout(Promise.race([ai.live.connect({
         model: details.model,
         config: { ...details.config, responseModalities: [Modality.AUDIO] },
         callbacks: {
@@ -342,9 +428,8 @@ export function useLiveTutor(
             if (isConnectedSession()) handleMessage(message);
           },
           onerror: (event) => {
-            if (isConnectedSession() && activeRef.current) {
-              setError(event.message || "The live tutor connection encountered an error.");
-            }
+            if (!connectionReady && activeRef.current) rejectPendingConnection(new Error(event.message));
+            else if (isConnectedSession() && activeRef.current) setError(friendlyTutorFailure(new Error(event.message)));
           },
           onclose: () => {
             if (!isConnectedSession()) return;
@@ -352,7 +437,7 @@ export function useLiveTutor(
             void disconnect(true);
           },
         },
-      });
+      }), connectionFailure]), remainingTime(), (lateSession) => lateSession.close());
       if (!isCurrent()) {
         session.close();
         return false;
@@ -360,9 +445,11 @@ export function useLiveTutor(
       sessionRef.current = session;
       connectedSession = session;
       connectionReady = true;
+      rejectPendingConnection(new Error("Live connection established."));
       mutedRef.current = false;
       setMuted(false);
       setStatus("connected");
+      setConnectingSince(null);
       session.sendRealtimeInput({ text: "Begin or continue this lesson from my saved course progress. Teach one small idea and ask me one question." });
       return true;
     } catch (failure) {
@@ -370,7 +457,7 @@ export function useLiveTutor(
       await disconnect(false);
       if (!activeRef.current) return false;
       setStatus("idle");
-      setError(failure instanceof Error ? failure.message : "The live tutor could not start. You can continue in chat.");
+      setError(friendlyTutorFailure(failure));
       return false;
     }
   }, [courseId, disconnect, handleMessage, savePendingTranscripts, status, topicId, user]);
@@ -402,7 +489,7 @@ export function useLiveTutor(
   }, [disconnect]);
 
   return {
-    status, muted, speaking, partialTranscript, error, hasUnsaved,
+    status, connectingSeconds, muted, speaking, partialTranscript, error, hasUnsaved,
     connect, disconnect, sendText, toggleMute, retrySave: savePendingTranscripts,
   };
 }

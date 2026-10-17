@@ -215,11 +215,14 @@ class TutorEndpointTests(unittest.TestCase):
         payload.update(overrides)
         return self.client.post("/api/tutor/action", json=payload)
 
-    def live_transcript(self, turns, operation_id="c" * 32):
-        return self.client.post("/api/tutor/live/transcript", json={
+    def live_transcript(self, turns, operation_id="c" * 32, progress_epoch=0, usage=None):
+        body = {
             "courseId": "course-123", "topicId": "module-1-topic-1",
-            "operationId": operation_id, "turns": turns,
-        })
+            "progressEpoch": progress_epoch, "operationId": operation_id, "turns": turns,
+        }
+        if usage is not None:
+            body["usage"] = usage
+        return self.client.post("/api/tutor/live/transcript", json=body)
 
     def test_opening_does_not_call_model_or_mark_progress(self):
         response = self.state()
@@ -227,6 +230,50 @@ class TutorEndpointTests(unittest.TestCase):
         self.assertEqual(response.json()["learner_name"], "Swati")
         self.assertEqual(response.json()["topic_status"]["module-1-topic-1"], "not_started")
         self.model.assert_not_called()
+
+    def test_restart_resets_progress_and_hides_prior_topic_conversation(self):
+        self.action("start")
+        state_path = self.database.course_path + "/tutor/state"
+        self.database.docs[state_path]["topic_status"] = {"module-1-topic-1": "completed"}
+        self.database.docs[state_path]["confirmed_modules"] = ["module-1"]
+        restarted = self.action("restart")
+
+        self.assertEqual(restarted.status_code, 200)
+        self.assertEqual(restarted.json()["progress_epoch"], 1)
+        self.assertEqual(restarted.json()["active_topic_id"], "module-1-topic-1")
+        self.assertEqual(restarted.json()["topic_status"]["module-1-topic-1"], "not_started")
+        self.assertEqual(restarted.json()["module_status"]["module-1"], "not_started")
+        self.assertEqual(restarted.json()["conversation"]["messages"], [])
+        self.assertEqual(self.model.call_count, 1)
+
+    def test_chat_request_switches_to_exact_saved_syllabus_topic(self):
+        path = self.database.course_path
+        syllabus = self.database.docs[path + "/syllabus/v1"]
+        topic = syllabus["modules"][0]["topics"][0]
+        topic["estimated_minutes"] /= 2
+        syllabus["modules"][0]["topics"].append({**topic, "topic_id": "module-1-topic-2", "title": "Variables"})
+        self.action("start")
+
+        switched = self.action("message", message="Let's learn Variables next.")
+
+        self.assertEqual(switched.status_code, 200, switched.text)
+        self.assertEqual(switched.json()["active_topic_id"], "module-1-topic-2")
+        self.assertEqual(switched.json()["conversation"]["messages"][-1]["text"],
+                         "Sure, let's switch to Variables. We can continue this lesson whenever you like.")
+        self.assertEqual(self.database.docs[path + "/tutorTopics/module-1-topic-1"]["messages"][-1]["text"],
+                         "Let's learn Variables next.")
+        self.assertEqual(self.model.call_count, 1)
+
+    def test_unrelated_chat_request_redirects_without_unlocking_confirmation(self):
+        self.model.return_value = make_reply().model_copy(update={
+            "intent": "redirect",
+            "redirect_message": "I'm unable to say anything about that. Would you like to continue this topic?",
+        })
+        response = self.action("message", message="Tell me today's weather.")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["conversation"]["messages"][-1]["reply"]["intent"], "redirect")
+        self.assertFalse(response.json()["can_confirm"])
 
     def test_start_teaches_but_waits_for_a_learner_turn_before_confirmation(self):
         started = self.action("start")
@@ -334,6 +381,51 @@ class TutorEndpointTests(unittest.TestCase):
         self.assertEqual(self.state().json()["topic_status"]["module-1-topic-1"], "in_progress")
         self.assertEqual(self.model.call_count, 0)
 
+    def test_live_usage_metadata_is_logged_once_with_transcript_retries(self):
+        turns = [
+            {"role": "user", "text": "Explain this concept."},
+            {"role": "assistant", "text": "Let's work through it together."},
+        ]
+        usage = {
+            "input_tokens": 100,
+            "output_tokens": 40,
+            "thinking_tokens": 8,
+            "total_tokens": 148,
+            "prompt_tokens_details": [{"modality": "AUDIO", "token_count": 100}],
+            "response_tokens_details": [{"modality": "AUDIO", "token_count": 40}],
+        }
+        with patch.object(tutor_route, "log_live_usage") as log_usage:
+            first = self.live_transcript(turns, operation_id="d" * 32, usage=usage)
+            retry = self.live_transcript(turns, operation_id="d" * 32, usage=usage)
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(retry.status_code, 200, retry.text)
+        log_usage.assert_called_once()
+        self.assertEqual(log_usage.call_args.kwargs["usage"]["total_tokens"], 148)
+
+    def test_live_transcript_can_switch_to_named_syllabus_topic(self):
+        path = self.database.course_path
+        syllabus = self.database.docs[path + "/syllabus/v1"]
+        topic = syllabus["modules"][0]["topics"][0]
+        topic["estimated_minutes"] /= 2
+        syllabus["modules"][0]["topics"].append({**topic, "topic_id": "module-1-topic-2", "title": "Variables"})
+
+        response = self.live_transcript([
+            {"role": "user", "text": "Let's learn Variables next."},
+            {"role": "assistant", "text": "Sure, let's move to Variables."},
+        ])
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["active_topic_id"], "module-1-topic-2")
+
+    def test_live_transcript_from_before_restart_is_rejected(self):
+        self.assertEqual(self.action("restart").status_code, 200)
+        response = self.live_transcript([
+            {"role": "user", "text": "Old voice session."},
+            {"role": "assistant", "text": "Old response."},
+        ])
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(self.state().json()["conversation"]["messages"], [])
+
     def test_live_transcript_only_unlocks_confirmation_after_a_saved_two_way_chat_plan(self):
         self.assertEqual(self.action("start").status_code, 200)
         self.assertFalse(self.state().json()["can_confirm"])
@@ -381,6 +473,18 @@ class TutorEndpointTests(unittest.TestCase):
         self.assertIn("Swati", instruction)
         self.assertIn("Syntax and values", instruction)
         self.assertIn("Python Tutorial", instruction)
+
+    def test_live_session_rate_limit_returns_friendly_message(self):
+        with patch.object(tutor_route, "GEMINI_LIVE_ENABLED", True), \
+                patch.object(tutor_route, "create_live_access_token",
+                             side_effect=AIProviderError("gemini", "private quota detail", 429)):
+            response = self.client.post("/api/tutor/live/session", json={
+                "courseId": "course-123", "topicId": "module-1-topic-1",
+            })
+        self.assertEqual(response.status_code, 429)
+        self.assertIn("request limit", response.json()["detail"])
+        self.assertNotIn("private quota detail", response.text)
+        self.assertNotIn("HTTP 429", response.text)
 
     def test_live_session_rejects_paused_or_inactive_topics(self):
         self.action("pause")
@@ -458,6 +562,9 @@ class TutorEndpointTests(unittest.TestCase):
                 self.assertEqual(self.model.call_count, before + 1)
                 self.assertFalse(self.state().json()["can_confirm"])
                 self.assertFalse(self.state().json()["busy"])
+                if code == 429:
+                    self.assertIn("request limit", response.json()["detail"])
+                    self.assertNotIn("HTTP 429", response.json()["detail"])
 
     def test_authentication_and_course_ownership(self):
         self.assertEqual(self.client.get("/api/tutor/state", params={"courseId": "someone-elses-course"}).status_code, 404)
@@ -526,7 +633,7 @@ class TutorEndpointTests(unittest.TestCase):
         self.model.side_effect = invalid_reply
         response = self.action("message", message="Help")
         self.assertEqual(response.status_code, 502)
-        self.assertIn("example: string_type", response.json()["detail"])
+        self.assertIn("couldn't prepare a reliable tutor response", response.json()["detail"])
         self.assertNotIn("PRIVATE_CONTENT", response.text)
 
     def test_client_cannot_write_progress_or_another_user_identity(self):
