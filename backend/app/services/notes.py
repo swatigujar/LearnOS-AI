@@ -106,6 +106,7 @@ def _claim_job(transaction, database, uid: str, course_id: str, topic_id: str, v
         return None
     claim_id = uuid4().hex
     transaction.set(note_ref, {"status": "generating", "attempts": attempts + 1, "claimId": claim_id,
+                               "generationStartedAt": firestore.SERVER_TIMESTAMP,
                                "updatedAt": firestore.SERVER_TIMESTAMP}, merge=True)
     return course, note, conversation_data, note_ref, claim_id
 
@@ -154,8 +155,15 @@ def _save_local_note_image(uid: str, course_id: str, topic_id: str, version: int
 
 
 def _lesson_content(conversation: TutorConversation) -> list[dict]:
-    return [message.reply.model_dump() for message in conversation.messages
-            if message.role == "assistant" and message.reply is not None]
+    content = []
+    for message in conversation.messages:
+        if message.role != "assistant":
+            continue
+        if message.reply is not None:
+            content.append(message.reply.model_dump())
+        elif message.text.strip():
+            content.append({"live_teacher_transcript": message.text, "channel": message.channel})
+    return content
 
 
 def _notes_prompt(course, syllabus, module, topic, lesson_content, learner_questions, sources) -> str:

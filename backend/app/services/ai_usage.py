@@ -13,9 +13,15 @@ from app.core.config import (
     AI_DAILY_REQUEST_LIMIT,
     AI_MAX_OUTPUT_TOKENS,
     AI_MONTHLY_ESTIMATED_COST_LIMIT_USD,
+    GEMINI_LIVE_INPUT_AUDIO_PRICE_PER_MILLION_USD,
+    GEMINI_LIVE_INPUT_IMAGE_VIDEO_PRICE_PER_MILLION_USD,
+    GEMINI_LIVE_INPUT_TEXT_PRICE_PER_MILLION_USD,
+    GEMINI_LIVE_OUTPUT_AUDIO_PRICE_PER_MILLION_USD,
+    GEMINI_LIVE_OUTPUT_TEXT_PRICE_PER_MILLION_USD,
     GEMINI_INPUT_PRICE_PER_MILLION_USD,
     GEMINI_OUTPUT_PRICE_PER_MILLION_USD,
     GEMINI_SEARCH_PRICE_PER_THOUSAND_USD,
+    USD_TO_INR_RATE,
 )
 from app.core.firebase import get_firestore_client
 
@@ -42,6 +48,20 @@ def _pricing() -> tuple[float, float]:
 def estimate_cost_usd(input_tokens: int, output_tokens: int) -> float:
     input_rate, output_rate = _pricing()
     return round((input_tokens * input_rate + output_tokens * output_rate) / 1_000_000, 8)
+
+def _inr_rate():
+    try:
+        rate = float(USD_TO_INR_RATE)
+    except (TypeError, ValueError):
+        return None
+    return rate if math.isfinite(rate) and rate > 0 else None
+
+
+def _to_inr(amount_usd):
+    rate = _inr_rate()
+    if amount_usd is None or rate is None:
+        return None
+    return round(amount_usd * rate, 8)
 
 
 def _request_refs(database, feature: str, request_id: str, now: datetime):
@@ -138,9 +158,116 @@ def _usage_values(result):
         search_count,
     )
 
+def _log_usage(*, request_id, feature, model, status, duration_ms, result=None,
+               reserved_cost_usd=0.0, reserved_search_count=0, search_price_per_thousand_usd=0.0,
+               fixed_cost_usd=0.0, error_code=None):
+    input_tokens, output_tokens, thinking_tokens, total_tokens, search_query_count = _usage_values(result)
+    try:
+        input_rate, output_rate = _pricing()
+    except UsageLimitError:
+        input_rate = output_rate = None
+    input_cost_usd = input_tokens * input_rate / 1_000_000 if input_tokens is not None and input_rate is not None else None
+    output_cost_usd = output_tokens * output_rate / 1_000_000 if output_tokens is not None and output_rate is not None else None
+    thinking_cost_usd = thinking_tokens * output_rate / 1_000_000 if thinking_tokens is not None and output_rate is not None else None
+    search_cost_usd = None
+    if reserved_search_count == 0:
+        search_cost_usd = 0.0
+    elif search_query_count is not None:
+        search_cost_usd = search_query_count * search_price_per_thousand_usd / 1000
+    usage_available = (
+        input_cost_usd is not None and output_cost_usd is not None and thinking_cost_usd is not None
+        and search_cost_usd is not None
+    )
+    estimated_cost_usd = None
+    if usage_available:
+        estimated_cost_usd = round(
+            input_cost_usd + output_cost_usd + thinking_cost_usd + search_cost_usd
+            + fixed_cost_usd,
+            8,
+        )
+    logger.info("GEMINI_USAGE %s", {
+        "request_id": request_id,
+        "feature": feature,
+        "model": model,
+        "status": status,
+        "duration_ms": duration_ms,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "thinking_tokens": thinking_tokens,
+        "total_tokens": total_tokens,
+        "token_usage_available": input_tokens is not None and output_tokens is not None,
+        "input_token_cost_inr_estimate": _to_inr(input_cost_usd),
+        "output_token_cost_inr_estimate": _to_inr(output_cost_usd),
+        "thinking_token_cost_inr_estimate": _to_inr(thinking_cost_usd),
+        "estimated_cost_usd": estimated_cost_usd,
+        "estimated_cost_inr": _to_inr(estimated_cost_usd),
+        "fixed_cost_inr_estimate": _to_inr(fixed_cost_usd),
+        "reserved_estimated_cost_usd": reserved_cost_usd,
+        "reserved_estimated_cost_inr": _to_inr(reserved_cost_usd),
+        "usd_to_inr_rate": _inr_rate(),
+        "error_code": error_code,
+    })
+
+
+def log_live_usage(*, request_id, model, usage, session_reserved_cost_usd):
+    input_prices = {
+        "TEXT": GEMINI_LIVE_INPUT_TEXT_PRICE_PER_MILLION_USD,
+        "AUDIO": GEMINI_LIVE_INPUT_AUDIO_PRICE_PER_MILLION_USD,
+        "IMAGE": GEMINI_LIVE_INPUT_IMAGE_VIDEO_PRICE_PER_MILLION_USD,
+        "VIDEO": GEMINI_LIVE_INPUT_IMAGE_VIDEO_PRICE_PER_MILLION_USD,
+        "DOCUMENT": GEMINI_LIVE_INPUT_IMAGE_VIDEO_PRICE_PER_MILLION_USD,
+    }
+    output_prices = {
+        "TEXT": GEMINI_LIVE_OUTPUT_TEXT_PRICE_PER_MILLION_USD,
+        "AUDIO": GEMINI_LIVE_OUTPUT_AUDIO_PRICE_PER_MILLION_USD,
+    }
+
+    def modality_cost(details, prices, token_count):
+        if not details:
+            return 0.0 if token_count == 0 else None
+        total = 0.0
+        for detail in details:
+            price = prices.get(detail["modality"])
+            if price is None:
+                return None
+            total += detail["token_count"] * price / 1_000_000
+        return total
+
+    input_cost_usd = modality_cost(
+        usage["prompt_tokens_details"], input_prices, usage.get("input_tokens"),
+    )
+    response_cost_usd = modality_cost(
+        usage["response_tokens_details"], output_prices, usage.get("output_tokens"),
+    )
+    thinking_tokens = usage.get("thinking_tokens")
+    thinking_cost_usd = (
+        thinking_tokens * GEMINI_LIVE_OUTPUT_TEXT_PRICE_PER_MILLION_USD / 1_000_000
+        if thinking_tokens is not None else None
+    )
+    estimated_cost_usd = None
+    if input_cost_usd is not None and response_cost_usd is not None and thinking_cost_usd is not None:
+        estimated_cost_usd = round(input_cost_usd + response_cost_usd + thinking_cost_usd, 8)
+    logger.info("GEMINI_LIVE_USAGE %s", {
+        "request_id": request_id,
+        "model": model,
+        "source": "client_reported_provider_usage",
+        "usage_scope": "provider_snapshot",
+        "token_usage_available": usage.get("input_tokens") is not None and usage.get("output_tokens") is not None,
+        "input_tokens": usage.get("input_tokens"),
+        "output_tokens": usage.get("output_tokens"),
+        "thinking_tokens": thinking_tokens,
+        "total_tokens": usage.get("total_tokens"),
+        "input_token_cost_inr_estimate": _to_inr(input_cost_usd),
+        "output_token_cost_inr_estimate": _to_inr(response_cost_usd),
+        "thinking_token_cost_inr_estimate": _to_inr(thinking_cost_usd),
+        "estimated_token_cost_inr": _to_inr(estimated_cost_usd),
+        "session_reserved_cost_inr": _to_inr(session_reserved_cost_usd),
+        "usd_to_inr_rate": _inr_rate(),
+    })
+
 
 def _settle_record(database, refs, *, status, result=None, error_code=None, reserved_search_count=0,
-                   fixed_cost_usd=0.0):
+                   fixed_cost_usd=0.0, known_unbilled=False):
     _, monthly_ref, request_ref = refs
     input_tokens, output_tokens, thinking_tokens, total_tokens, search_query_count = _usage_values(result)
     actual_cost = None
@@ -152,6 +279,8 @@ def _settle_record(database, refs, *, status, result=None, error_code=None, rese
         if search_count is not None:
             actual_cost += search_count * GEMINI_SEARCH_PRICE_PER_THOUSAND_USD / 1000
             actual_cost = round(actual_cost, 8)
+    if known_unbilled:
+        actual_cost = 0.0
     provider_request_id = getattr(result, "request_id", None) if result is not None else None
     if not isinstance(provider_request_id, str) or len(provider_request_id) > 256:
         provider_request_id = None
@@ -252,9 +381,18 @@ def run_tracked_provider_call(
             code = type(exc).__name__
         try:
             _settle_record(database, refs, status="failed", error_code=code,
-                           reserved_search_count=reserved_search_count, fixed_cost_usd=fixed_cost_usd)
+                           reserved_search_count=reserved_search_count, fixed_cost_usd=fixed_cost_usd,
+                           known_unbilled=(feature == "tutor_live_session"
+                                           and code in (400, 401, 403, 404, 422, 429)))
         except Exception as settle_error:
             logger.error("Gemini failure usage settlement failed (%s).", type(settle_error).__name__)
+        _log_usage(
+            request_id=request_ref.id, feature=feature, model=model, status="failed",
+            duration_ms=round((perf_counter() - started) * 1000), reserved_cost_usd=reserved_cost,
+            reserved_search_count=reserved_search_count,
+            search_price_per_thousand_usd=search_price_per_thousand_usd,
+            fixed_cost_usd=fixed_cost_usd, error_code=code,
+        )
         raise
     try:
         _settle_record(database, refs, status="success", result=result,
@@ -263,11 +401,11 @@ def run_tracked_provider_call(
         # Keep the full reservation in the monthly budget if usage could not be
         # recorded, and return the already-generated result to avoid a duplicate call.
         logger.error("Gemini success usage settlement failed (%s).", type(exc).__name__)
-    logger.info("GEMINI_USAGE %s", {
-        "request_id": request_ref.id,
-        "feature": feature,
-        "model": model,
-        "status": "success",
-        "duration_ms": round((perf_counter() - started) * 1000),
-    })
+    _log_usage(
+        request_id=request_ref.id, feature=feature, model=model, status="success",
+        duration_ms=round((perf_counter() - started) * 1000), result=result,
+        reserved_cost_usd=reserved_cost, reserved_search_count=reserved_search_count,
+        search_price_per_thousand_usd=search_price_per_thousand_usd,
+        fixed_cost_usd=fixed_cost_usd,
+    )
     return result

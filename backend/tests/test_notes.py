@@ -83,6 +83,22 @@ class NotesMemoryFirestore:
 
 
 class NotesSchemaTests(unittest.TestCase):
+    def test_claim_saves_generation_start_time_for_elapsed_timer(self):
+        course_path = "users/learner/courses/course"
+        note_path = course_path + "/notes/module-1-topic-1-v1"
+        database = NotesMemoryFirestore({
+            course_path: {"syllabusStatus": "ready", "syllabusVersion": 1},
+            course_path + "/tutor/state": {"topic_status": {"module-1-topic-1": "completed"}},
+            note_path: {"status": "queued", "attempts": 0},
+        })
+        claimed = notes_service._claim_job(
+            database.transaction(), database, "learner", "course", "module-1-topic-1", 1,
+        )
+        self.assertIsNotNone(claimed)
+        note = database.docs[note_path]
+        self.assertEqual(note["status"], "generating")
+        self.assertIsInstance(note["generationStartedAt"], datetime)
+
     def test_failure_reason_includes_only_safe_validation_fields(self):
         validation_error = ValidationError.from_exception_data(
             "GeneratedNotes",
