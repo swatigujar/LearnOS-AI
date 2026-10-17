@@ -14,6 +14,7 @@ from app.api.dependencies import get_current_user
 from app.api.routes import tutor as tutor_route
 from app.main import app
 from app.services.ai_provider import AIProviderError
+from app.services.ai_usage import UsageLimitError
 
 
 def make_reply():
@@ -514,6 +515,23 @@ class TutorEndpointTests(unittest.TestCase):
         self.assertIn("request limit", response.json()["detail"])
         self.assertNotIn("private quota detail", response.text)
         self.assertNotIn("HTTP 429", response.text)
+
+    def test_live_session_usage_guard_preserves_status_and_reason(self):
+        for message, status in (
+            ("The configured monthly Gemini estimated-cost limit has been reached.", 429),
+            ("The configured daily Gemini request limit has been reached.", 429),
+            ("Gemini cost records need review; AI requests are disabled.", 503),
+        ):
+            with self.subTest(status=status, message=message), \
+                    patch.object(tutor_route, "GEMINI_LIVE_ENABLED", True), \
+                    patch.object(tutor_route, "create_live_access_token",
+                                 side_effect=UsageLimitError(message, status)):
+                response = self.client.post("/api/tutor/live/session", json={
+                    "courseId": "course-123", "topicId": "module-1-topic-1",
+                })
+            self.assertEqual(response.status_code, status)
+            self.assertEqual(response.json()["detail"], message)
+            self.assertNotIn("accessToken", response.json())
 
     def test_live_session_rejects_paused_or_inactive_topics(self):
         self.action("pause")

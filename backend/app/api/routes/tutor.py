@@ -20,7 +20,7 @@ from app.api.schemas.tutor import (
 from app.core.config import GEMINI_LIVE_ENABLED, GEMINI_LIVE_MODEL, GEMINI_LIVE_SESSION_COST_RESERVE_USD
 from app.core.firebase import get_firestore_client
 from app.services.ai_provider import AIProviderError
-from app.services.ai_usage import log_live_usage
+from app.services.ai_usage import UsageLimitError, log_live_usage
 from app.services.live_tutor import build_live_instruction, create_live_access_token, live_client_config
 from app.services.notes import generate_topic_notes, note_document_id
 from app.services.tutor import confirm_concept, current_concept_taught, ensure_topic_available, ordered_topics, teach
@@ -640,6 +640,9 @@ def create_live_tutor_session(request: TutorLiveSessionRequest,
         }
     except HTTPException:
         raise
+    except UsageLimitError as exc:
+        logger.warning("Live tutor usage guard rejected the session: %s", exc)
+        raise HTTPException(exc.status_code, str(exc)) from exc
     except AIProviderError as exc:
         status = exc.status_code if exc.status_code in (429, 503, 504) else 502
         logger.warning("Live tutor provider failed with status %s.", exc.status_code or status)

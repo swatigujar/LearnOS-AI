@@ -48,7 +48,6 @@ export function AiTutor({ courseId, controller, lesson, nextTopicId, moduleReady
   const conversationArea = useRef<HTMLDivElement>(null);
   const live = useLiveTutor(courseId, lesson?.topic_id ?? "", state?.progress_epoch ?? 0, acceptSavedState);
   const previousTopicId = useRef(lesson?.topic_id ?? "");
-  const reconnectLiveAfterSwitch = useRef(false);
   const messages = state?.conversation.messages ?? [];
   let currentExchangeStart = 0;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -75,16 +74,9 @@ export function AiTutor({ courseId, controller, lesson, nextTopicId, moduleReady
     if (previousTopicId.current === topicId) return;
     previousTopicId.current = topicId;
     if (topicId && mode === "voice" && live.status !== "idle") {
-      reconnectLiveAfterSwitch.current = true;
       void live.disconnect(false);
     }
   }, [lesson?.topic_id, live.disconnect, live.status, mode]);
-
-  useEffect(() => {
-    if (!reconnectLiveAfterSwitch.current || mode !== "voice" || live.status !== "idle" || !lesson) return;
-    reconnectLiveAfterSwitch.current = false;
-    void live.connect();
-  }, [lesson, live.connect, live.status, mode]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -166,7 +158,7 @@ export function AiTutor({ courseId, controller, lesson, nextTopicId, moduleReady
       {completed && <p className="mt-2 text-xs font-semibold text-[#1b6657]">Topic completed by your confirmation.</p>}
     </div>
     {mode === "voice" && <div className="flex shrink-0 flex-wrap items-center gap-2 border-t border-[#e0e2d9] bg-[#f6f8f5] px-4 py-3 sm:px-5">
-      {live.status === "idle" && <button className="rounded-md bg-[#1b6657] px-3 py-2 text-sm font-semibold text-white disabled:opacity-50" disabled={disabled || !lesson} onClick={() => void live.connect()} type="button"><Mic aria-hidden="true" className="mr-2 inline" size={16} />Start session</button>}
+      {live.status === "idle" && <button className="rounded-md bg-[#1b6657] px-3 py-2 text-sm font-semibold text-white disabled:opacity-50" disabled={disabled || !lesson} onClick={() => void live.connect()} type="button"><Mic aria-hidden="true" className="mr-2 inline" size={16} />{live.error ? "Retry" : "Start session"}</button>}
       {live.status === "connecting" && <div className="flex w-full flex-wrap items-center gap-3 text-sm text-[#586761]" role="status"><span>Connecting to your live tutor and microphone… {formatConnectionTime(live.connectingSeconds)} / 1:00</span><button className="rounded-md border border-[#d9ddd5] px-2.5 py-1.5 text-xs font-semibold hover:bg-white" onClick={() => void live.disconnect(false)} type="button">Cancel</button></div>}
       {liveConnected && <><button aria-label={live.muted ? "Unmute microphone" : "Mute microphone"} className="rounded-md border border-[#d9ddd5] p-2" onClick={live.toggleMute} title={live.muted ? "Unmute microphone" : "Mute microphone"} type="button">{live.muted ? <MicOff aria-hidden="true" size={18} /> : <Mic aria-hidden="true" size={18} />}</button><span className="text-xs text-[#586761]">{live.muted ? "Microphone muted" : live.speaking ? "Tutor is speaking · interrupt anytime" : "Live · listening for your voice"}</span><button className="ml-auto rounded-md border border-[#d9ddd5] px-3 py-2 text-xs font-semibold" onClick={() => void live.disconnect()} type="button"><PhoneOff aria-hidden="true" className="mr-1 inline" size={14} />Stop session</button></>}
       <p className="w-full text-xs text-[#68736d]">Your audio streams to Gemini for the live conversation. Text transcripts are saved with this course; raw audio is not stored.</p>

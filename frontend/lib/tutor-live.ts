@@ -123,6 +123,7 @@ export function useLiveTutor(
   const savingRef = useRef(false);
   const savingPromiseRef = useRef<Promise<void> | null>(null);
   const activeRef = useRef(false);
+  const connectionPendingRef = useRef(false);
   const connectionGenerationRef = useRef(0);
   const onSavedStateRef = useRef(onSavedState);
 
@@ -346,7 +347,8 @@ export function useLiveTutor(
   }, [queueCurrentTurn, savePendingTranscripts]);
 
   const connect = useCallback(async () => {
-    if (!user || !topicId || status !== "idle") return false;
+    if (!user || !topicId || status !== "idle" || connectionPendingRef.current || sessionRef.current) return false;
+    connectionPendingRef.current = true;
     const generation = ++connectionGenerationRef.current;
     const deadline = Date.now() + LIVE_CONNECT_TIMEOUT_MS;
     const remainingTime = () => Math.max(1, deadline - Date.now());
@@ -459,6 +461,8 @@ export function useLiveTutor(
       setStatus("idle");
       setError(friendlyTutorFailure(failure));
       return false;
+    } finally {
+      connectionPendingRef.current = false;
     }
   }, [courseId, disconnect, handleMessage, savePendingTranscripts, status, topicId, user]);
 

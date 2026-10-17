@@ -1,9 +1,11 @@
 import unittest
 from copy import deepcopy
+from io import StringIO
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from app.services import ai_usage
+from app.services.ai_provider import AIProviderError
 
 
 class Snapshot:
@@ -70,6 +72,42 @@ class Database:
 
 
 class AIUsageLimitTests(unittest.TestCase):
+    def test_backend_startup_enables_chat_and_live_usage_console_logs(self):
+        from app import main
+
+        self.assertIs(main.usage_logger, ai_usage.logger)
+        stream = StringIO()
+        handler = main.usage_logger.handlers[0]
+        with patch.object(handler, "stream", stream):
+            ai_usage._log_usage(
+                request_id="chat-log", feature="tutor", model="chat-model",
+                status="success", duration_ms=1,
+                result=SimpleNamespace(usage={"input_tokens": 10, "output_tokens": 5}),
+            )
+            ai_usage.log_live_usage(
+                request_id="live-log", model="live-model", session_reserved_cost_usd=2,
+                usage={"input_tokens": 0, "output_tokens": 0, "thinking_tokens": 0,
+                       "total_tokens": 0, "prompt_tokens_details": [], "response_tokens_details": []},
+            )
+        output = stream.getvalue()
+        self.assertIn("GEMINI_USAGE", output)
+        self.assertIn("GEMINI_LIVE_USAGE", output)
+        self.assertIn("'input_tokens': 10", output)
+        self.assertIn("'output_tokens': 5", output)
+
+    def test_live_token_log_does_not_double_count_session_reserve(self):
+        with patch.object(ai_usage, "USD_TO_INR_RATE", "90"), \
+                self.assertLogs(ai_usage.logger, level="INFO") as captured:
+            ai_usage._log_usage(
+                request_id="live-token", feature="tutor_live_session", model="live-model",
+                status="success", duration_ms=1, reserved_cost_usd=2.01, fixed_cost_usd=2,
+            )
+        output = captured.records[0].getMessage()
+        self.assertIn("'reserved_estimated_cost_usd': 2.01", output)
+        self.assertIn("'reserved_estimated_cost_inr': 180.9", output)
+        self.assertIn("'token_usage_available': False", output)
+        self.assertIn("'input_tokens': None", output)
+
     def setUp(self):
         self.database = Database()
         self.firestore = patch.object(ai_usage, "get_firestore_client", return_value=self.database)
@@ -193,6 +231,41 @@ class AIUsageLimitTests(unittest.TestCase):
         self.assertIn("'status': 'failed'", usage_log)
         self.assertIn("'input_tokens': None", usage_log)
         self.assertIn("'reserved_estimated_cost_inr':", usage_log)
+
+    def test_rejected_live_token_releases_reserve_without_retrying(self):
+        for status in (400, 401, 403, 404, 422, 429):
+            with self.subTest(status=status):
+                invoke = Mock(side_effect=AIProviderError("gemini", "Token rejected", status))
+                with self.assertRaises(AIProviderError):
+                    ai_usage.run_tracked_provider_call(
+                        feature="tutor_live_session", request_id=f"rejected-{status}",
+                        model="gemini-3.8-live", prompt_content="saved context",
+                        invoke=invoke, max_output_tokens=1, fixed_cost_usd=2.0,
+                    )
+                invoke.assert_called_once()
+                month = next(value for path, value in self.database.docs.items() if "/monthly/" in path)
+                self.assertEqual(month["reserved_estimated_cost_usd"], 0.0)
+        records = [value for path, value in self.database.docs.items() if "/requests/" in path]
+        self.assertEqual(len(records), 6)
+        self.assertTrue(all(record["status"] == "failed" for record in records))
+        self.assertTrue(all(record["estimated_cost_usd"] == 0.0 for record in records))
+
+    def test_uncertain_live_failure_keeps_reserve_without_retrying(self):
+        for status in (408, 500, 503, 504):
+            with self.subTest(status=status):
+                invoke = Mock(side_effect=AIProviderError("gemini", "Unknown outcome", status))
+                with self.assertRaises(AIProviderError):
+                    ai_usage.run_tracked_provider_call(
+                        feature="tutor_live_session", request_id=f"uncertain-{status}",
+                        model="gemini-3.8-live", prompt_content="saved context",
+                        invoke=invoke, max_output_tokens=1, fixed_cost_usd=2.0,
+                    )
+                invoke.assert_called_once()
+        records = [value for path, value in self.database.docs.items() if "/requests/" in path]
+        month = next(value for path, value in self.database.docs.items() if "/monthly/" in path)
+        self.assertEqual(month["reserved_estimated_cost_usd"],
+                         round(sum(record["reserved_estimated_cost_usd"] for record in records), 8))
+        self.assertTrue(all(record["estimated_cost_usd"] is None for record in records))
 
     def test_missing_pricing_blocks_before_provider_call(self):
         invoke = Mock()

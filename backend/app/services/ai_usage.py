@@ -195,13 +195,15 @@ def _log_usage(*, request_id, feature, model, status, duration_ms, result=None,
         "output_tokens": output_tokens,
         "thinking_tokens": thinking_tokens,
         "total_tokens": total_tokens,
+        "token_usage_available": input_tokens is not None and output_tokens is not None,
         "input_token_cost_inr_estimate": _to_inr(input_cost_usd),
         "output_token_cost_inr_estimate": _to_inr(output_cost_usd),
         "thinking_token_cost_inr_estimate": _to_inr(thinking_cost_usd),
         "estimated_cost_usd": estimated_cost_usd,
         "estimated_cost_inr": _to_inr(estimated_cost_usd),
         "fixed_cost_inr_estimate": _to_inr(fixed_cost_usd),
-        "reserved_estimated_cost_inr": _to_inr(reserved_cost_usd + fixed_cost_usd),
+        "reserved_estimated_cost_usd": reserved_cost_usd,
+        "reserved_estimated_cost_inr": _to_inr(reserved_cost_usd),
         "usd_to_inr_rate": _inr_rate(),
         "error_code": error_code,
     })
@@ -250,6 +252,7 @@ def log_live_usage(*, request_id, model, usage, session_reserved_cost_usd):
         "model": model,
         "source": "client_reported_provider_usage",
         "usage_scope": "provider_snapshot",
+        "token_usage_available": usage.get("input_tokens") is not None and usage.get("output_tokens") is not None,
         "input_tokens": usage.get("input_tokens"),
         "output_tokens": usage.get("output_tokens"),
         "thinking_tokens": thinking_tokens,
@@ -264,7 +267,7 @@ def log_live_usage(*, request_id, model, usage, session_reserved_cost_usd):
 
 
 def _settle_record(database, refs, *, status, result=None, error_code=None, reserved_search_count=0,
-                   fixed_cost_usd=0.0):
+                   fixed_cost_usd=0.0, known_unbilled=False):
     _, monthly_ref, request_ref = refs
     input_tokens, output_tokens, thinking_tokens, total_tokens, search_query_count = _usage_values(result)
     actual_cost = None
@@ -276,6 +279,8 @@ def _settle_record(database, refs, *, status, result=None, error_code=None, rese
         if search_count is not None:
             actual_cost += search_count * GEMINI_SEARCH_PRICE_PER_THOUSAND_USD / 1000
             actual_cost = round(actual_cost, 8)
+    if known_unbilled:
+        actual_cost = 0.0
     provider_request_id = getattr(result, "request_id", None) if result is not None else None
     if not isinstance(provider_request_id, str) or len(provider_request_id) > 256:
         provider_request_id = None
@@ -376,7 +381,9 @@ def run_tracked_provider_call(
             code = type(exc).__name__
         try:
             _settle_record(database, refs, status="failed", error_code=code,
-                           reserved_search_count=reserved_search_count, fixed_cost_usd=fixed_cost_usd)
+                           reserved_search_count=reserved_search_count, fixed_cost_usd=fixed_cost_usd,
+                           known_unbilled=(feature == "tutor_live_session"
+                                           and code in (400, 401, 403, 404, 422, 429)))
         except Exception as settle_error:
             logger.error("Gemini failure usage settlement failed (%s).", type(settle_error).__name__)
         _log_usage(
