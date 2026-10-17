@@ -3,8 +3,8 @@
 import { useEffect, useState } from "react";
 import Image from "next/image";
 import type { User } from "firebase/auth";
-import { CheckCircle2, FileText, RefreshCw } from "lucide-react";
-import { collection, doc, getDoc, onSnapshot } from "firebase/firestore";
+import { CheckCircle2, Download, FileText, RefreshCw } from "lucide-react";
+import { collection, doc, getDoc, onSnapshot, type Timestamp } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 
 type Topic = { topic_id: string; title: string; description: string };
@@ -14,38 +14,93 @@ type NoteRecord = {
   title?: string;
   lastError?: string;
   syllabusVersion?: number;
+  generationStartedAt?: Timestamp;
+  updatedAt?: Timestamp;
+  createdAt?: Timestamp;
   sources?: { title: string; url: string; description?: string }[];
 };
 
-function NoteImage({ user, courseId, topicId, title }: { user: User; courseId: string; topicId: string; title: string }) {
-  const [url, setUrl] = useState("");
+function GenerationTimer({ note }: { note: NoteRecord }) {
+  const [mountedAt] = useState(() => Date.now());
+  const [now, setNow] = useState(mountedAt);
+  const startedAt = (note.status === "generating"
+    ? note.generationStartedAt ?? note.updatedAt ?? note.createdAt
+    : note.createdAt)?.toMillis() ?? mountedAt;
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  return <p aria-live="off" className="mt-1 text-xs text-[#68736d]">Elapsed: {Math.max(0, Math.floor((now - startedAt) / 1000))} seconds</p>;
+}
+
+const noteImageCache = new Map<string, string>();
+const noteImageRequests = new Map<string, Promise<string>>();
+
+function noteImageKey(uid: string, courseId: string, topicId: string, version: number) {
+  return `${uid}\u0000${courseId}\u0000${topicId}\u0000${version}`;
+}
+
+function clearNoteImageCache(uid: string, courseId: string, topicId: string) {
+  const prefix = `${uid}\u0000${courseId}\u0000${topicId}\u0000`;
+  for (const [key, url] of noteImageCache) {
+    if (!key.startsWith(prefix)) continue;
+    URL.revokeObjectURL(url);
+    noteImageCache.delete(key);
+  }
+  for (const key of noteImageRequests.keys()) {
+    if (key.startsWith(prefix)) noteImageRequests.delete(key);
+  }
+}
+
+async function getNoteImage(user: User, courseId: string, topicId: string, version: number) {
+  const key = noteImageKey(user.uid, courseId, topicId, version);
+  const cached = noteImageCache.get(key);
+  if (cached) return cached;
+  const pending = noteImageRequests.get(key);
+  if (pending) return pending;
+
+  const request = (async () => {
+    const token = await user.getIdToken();
+    const response = await fetch(`/api/notes/${encodeURIComponent(courseId)}/${encodeURIComponent(topicId)}/image`, {
+      headers: { Authorization: `Bearer ${token}` }, cache: "no-store",
+    });
+    if (!response.ok) throw new Error("Image unavailable");
+    const url = URL.createObjectURL(await response.blob());
+    noteImageCache.set(key, url);
+    return url;
+  })();
+  noteImageRequests.set(key, request);
+  try { return await request; }
+  finally { if (noteImageRequests.get(key) === request) noteImageRequests.delete(key); }
+}
+
+function NoteImage({ user, courseId, topicId, title, syllabusVersion }: {
+  user: User;
+  courseId: string;
+  topicId: string;
+  title: string;
+  syllabusVersion: number;
+}) {
+  const cacheKey = noteImageKey(user.uid, courseId, topicId, syllabusVersion);
+  const [url, setUrl] = useState(() => noteImageCache.get(cacheKey) ?? "");
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     let active = true;
-    let objectUrl = "";
-    async function load() {
-      try {
-        const token = await user.getIdToken();
-        const response = await fetch(`/api/notes/${encodeURIComponent(courseId)}/${encodeURIComponent(topicId)}/image`, {
-          headers: { Authorization: `Bearer ${token}` }, cache: "no-store",
-        });
-        if (!response.ok) throw new Error("Image unavailable");
-        const createdUrl = URL.createObjectURL(await response.blob());
-        if (!active) { URL.revokeObjectURL(createdUrl); return; }
-        objectUrl = createdUrl;
-        setUrl(objectUrl);
-      } catch {
-        if (active) setFailed(true);
-      }
+    if (!noteImageCache.has(cacheKey)) {
+      void getNoteImage(user, courseId, topicId, syllabusVersion)
+        .then((imageUrl) => { if (active) setUrl(imageUrl); })
+        .catch(() => { if (active) setFailed(true); });
     }
-    void load();
-    return () => { active = false; if (objectUrl) URL.revokeObjectURL(objectUrl); };
-  }, [courseId, topicId, user]);
+    return () => { active = false; };
+  }, [cacheKey, courseId, syllabusVersion, topicId, user]);
 
   if (failed) return <p className="mt-3 text-sm text-[#68736d]" role="status">The handwritten image is temporarily unavailable.</p>;
   if (!url) return <p className="mt-3 text-sm text-[#68736d]" role="status">Loading handwritten page…</p>;
-  return <Image alt={`Handwritten notes for ${title}`} className="mt-4 h-auto max-h-[760px] w-full rounded-md border border-[#e0e2d9] object-contain" height={2048} src={url} unoptimized width={1536} />;
+  const filename = `${title.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "-").trim() || "Lesson notes"}.jpg`;
+  return <div><a className="mt-3 inline-flex items-center gap-2 rounded-md bg-[#1b6657] px-3 py-2 text-sm font-semibold text-white" download={filename} href={url}><Download aria-hidden="true" size={16} />Download notes</a><Image alt={`Handwritten notes for ${title}`} className="mt-4 h-auto max-h-[760px] w-full rounded-md border border-[#e0e2d9] object-contain" height={2048} onError={() => { clearNoteImageCache(user.uid, courseId, topicId); setUrl(""); setFailed(true); }} src={url} unoptimized width={1536} /></div>;
 }
 
 export function CourseNotesFolder({ user, courseId }: { user: User; courseId: string }) {
@@ -111,6 +166,7 @@ export function CourseNotesFolder({ user, courseId }: { user: User; courseId: st
   }, [courseId, user]);
 
   async function retry(topicId: string) {
+    clearNoteImageCache(user.uid, courseId, topicId);
     setRetrying((current) => ({ ...current, [topicId]: true }));
     setRetryErrors((current) => ({ ...current, [topicId]: "" }));
     try {
@@ -146,11 +202,11 @@ export function CourseNotesFolder({ user, courseId }: { user: User; courseId: st
                     <h4 className="break-words font-semibold text-[#1b302b]">{topic.title}</h4>
                     {note?.status === "completed" ? (
                       <>
-                        <NoteImage user={user} courseId={courseId} topicId={topic.topic_id} title={topic.title} />
+                        <NoteImage key={`${user.uid}-${courseId}-${topic.topic_id}-${note.syllabusVersion ?? 0}`} user={user} courseId={courseId} topicId={topic.topic_id} title={topic.title} syllabusVersion={note.syllabusVersion ?? 0} />
                         {!!note.sources?.length && <div className="mt-4 text-xs text-[#68736d]"><p className="font-semibold">Sources</p><ul className="mt-1 list-disc space-y-1 pl-5">{note.sources.map((source) => <li key={source.url}><a className="underline decoration-[#aab3aa] underline-offset-2 hover:text-[#1b6657]" href={source.url} rel="noreferrer" target="_blank">{source.title}</a></li>)}</ul></div>}
                       </>
                     ) : note?.status === "queued" || note?.status === "generating" ? (
-                      <div className="mt-2"><p className="text-sm text-[#68736d]" role="status">{note.status === "queued" ? "Handwritten notes are queued…" : "Generating handwritten notes…"}</p><button className="mt-2 inline-flex items-center gap-2 rounded-md border border-[#d9ddd5] px-3 py-2 text-xs font-semibold text-[#586761] disabled:opacity-50" disabled={!!retrying[topic.topic_id]} onClick={() => void retry(topic.topic_id)} type="button"><RefreshCw aria-hidden="true" size={14} />{retrying[topic.topic_id] ? "Checking…" : "Check generation"}</button></div>
+                      <div className="mt-2"><p className="text-sm text-[#68736d]" role="status">{note.status === "queued" ? "Handwritten notes are queued…" : "Generating handwritten notes…"}</p><GenerationTimer key={note.status} note={note} /><button className="mt-2 inline-flex items-center gap-2 rounded-md border border-[#d9ddd5] px-3 py-2 text-xs font-semibold text-[#586761] disabled:opacity-50" disabled={!!retrying[topic.topic_id]} onClick={() => void retry(topic.topic_id)} type="button"><RefreshCw aria-hidden="true" size={14} />{retrying[topic.topic_id] ? "Checking…" : "Check generation"}</button></div>
                     ) : note?.status === "deleting" ? (
                       <p className="mt-2 text-sm text-[#68736d]" role="status">Removing notes with this course…</p>
                     ) : note?.status === "failed" ? (

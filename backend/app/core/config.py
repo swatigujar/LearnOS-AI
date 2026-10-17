@@ -2,14 +2,24 @@ import os
 from pathlib import Path
 from datetime import date, datetime, timezone
 
-from dotenv import dotenv_values, load_dotenv
+from dotenv import load_dotenv
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(BACKEND_ROOT / ".env")
-_backend_env = dotenv_values(BACKEND_ROOT / ".env")
 
-GEMINI_API_KEY = _backend_env.get("GEMINI_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", os.getenv("AI_MODEL", "gemini-3.8-flash"))
+GEMINI_LIVE_ENABLED = os.getenv("GEMINI_LIVE_ENABLED", "true").lower() == "true"
+GEMINI_LIVE_MODEL = os.getenv("GEMINI_LIVE_MODEL", "gemini-3.8-live")
+GEMINI_LIVE_SESSION_COST_RESERVE_USD = float(os.getenv("GEMINI_LIVE_SESSION_COST_RESERVE_USD", "2.00"))
+# Live API standard-tier token prices per million; override when Google's rates change.
+GEMINI_LIVE_INPUT_TEXT_PRICE_PER_MILLION_USD = float(os.getenv("GEMINI_LIVE_INPUT_TEXT_PRICE_PER_MILLION_USD", "0.75"))
+GEMINI_LIVE_INPUT_AUDIO_PRICE_PER_MILLION_USD = float(os.getenv("GEMINI_LIVE_INPUT_AUDIO_PRICE_PER_MILLION_USD", "3.00"))
+GEMINI_LIVE_INPUT_IMAGE_VIDEO_PRICE_PER_MILLION_USD = float(os.getenv("GEMINI_LIVE_INPUT_IMAGE_VIDEO_PRICE_PER_MILLION_USD", "1.00"))
+GEMINI_LIVE_OUTPUT_TEXT_PRICE_PER_MILLION_USD = float(os.getenv("GEMINI_LIVE_OUTPUT_TEXT_PRICE_PER_MILLION_USD", "4.50"))
+GEMINI_LIVE_OUTPUT_AUDIO_PRICE_PER_MILLION_USD = float(os.getenv("GEMINI_LIVE_OUTPUT_AUDIO_PRICE_PER_MILLION_USD", "12.00"))
+# Display-only exchange rate for estimated rupee costs; override with a current rate.
+USD_TO_INR_RATE = os.getenv("USD_TO_INR_RATE", "90.0")
 AI_DAILY_REQUEST_LIMIT = int(os.getenv("AI_DAILY_REQUEST_LIMIT", "200"))
 AI_MONTHLY_ESTIMATED_COST_LIMIT_USD = float(os.getenv("AI_MONTHLY_ESTIMATED_COST_LIMIT_USD", "25"))
 AI_MAX_OUTPUT_TOKENS = int(os.getenv("AI_MAX_OUTPUT_TOKENS", "8192"))

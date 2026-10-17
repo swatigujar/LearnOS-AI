@@ -12,15 +12,15 @@ This repository contains the current web application and API. This README distin
 - Personal learning goals with current level, target timeline, daily study time, preferred learning style, and additional requirements.
 - Gemini-generated, schema-validated syllabi saved as versioned course data in Firestore. Learners can retry a failed generation without creating a duplicate goal.
 - A course workspace that reads the saved syllabus, shows course setup details, and allows timeline updates and course deletion.
-- A syllabus-aware AI tutor that teaches topics in order, presents one concept at a time, answers learner questions, repeats or re-explains content, and saves conversation and lesson state.
-- Optional browser speech input and speech playback where supported. Voice is an enhancement to the text tutor, not a requirement.
+- A syllabus-aware AI tutor that teaches in short back-and-forth steps, waits for learner responses before advancing, answers questions, and adapts examples using saved course history.
+- A Gemini Live voice tutor with natural audio input/output, interruptions, typed questions during a live session, and saved text transcripts. The backend issues short-lived Live tokens; the private Gemini API key stays server-side.
 - Authenticated Next.js API routes that forward Firebase ID tokens to the FastAPI backend.
 
-Tutor topic and module completion currently depends on learner confirmation. It is not an independent assessment of mastery. Dashboard entries for Practice, Notes, and Progress / Mastery are placeholders; diagnostic assessments, practice tracking, handwritten notes, generated revision notes, and progress reports are not implemented yet.
+Tutor topic and module completion currently depends on learner confirmation. It is not an independent assessment of mastery. Live voice stores transcripts rather than raw audio, and its teaching context uses saved syllabus content and validated notes; listed resource pages are not fetched into the tutor context. Dashboard entries for Practice and Progress / Mastery are placeholders; diagnostic assessments, practice tracking, generated revision notes, and progress reports are not implemented yet.
 
 ## Architecture
 
-The application uses a modular monolith: Next.js owns the user experience and same-origin API proxies; FastAPI owns protected business logic, validation, and AI orchestration. Firestore stores learner goals, generated syllabi, and tutor state.
+The application uses a modular monolith: Next.js owns the user experience and same-origin API proxies; FastAPI owns protected business logic, validation, and AI orchestration. Firestore stores learner goals, generated syllabi, tutor state, and course tutor history.
 
 ```mermaid
 flowchart LR
@@ -42,11 +42,11 @@ flowchart LR
 | --- | --- |
 | Next.js, React, TypeScript, Tailwind CSS | Responsive application UI, Firebase client authentication, owner-scoped client data access, and API proxy routes. |
 | FastAPI | Authenticated API endpoints, request handling, business rules, AI orchestration, and persistence coordination. |
-| Gemini | Syllabus generation and tutor explanations. Model selection is configurable on the backend. |
-| Firestore | Persistent learner goals, versioned syllabi, tutor conversations, and tutor progression state. User data is partitioned by Firebase UID. |
+| Gemini | Syllabus generation, tutor explanations, and real-time Live voice. Model selection is configurable on the backend. |
+| Firestore | Persistent learner goals, versioned syllabi, tutor conversations, Live transcripts, and tutor progression state. User data is partitioned by Firebase UID. |
 | Firebase Authentication / Admin SDK | Client sign-in and backend verification of Firebase ID tokens. |
 
-AI responses are validated before they are saved or used to advance tutor state. Private Gemini credentials and Firebase Admin credentials belong in the backend environment, never in frontend variables. Google Cloud Storage, Gemini Live, avatar delivery, and a separate vector database are not currently wired into the application.
+Structured chat replies are validated before they are saved or used to advance tutor state. Live audio transcripts are saved as conversation history and do not automatically award mastery. Private Gemini credentials and Firebase Admin credentials belong in the backend environment, never in frontend variables. Google Cloud Storage is used for private note images; avatar delivery and a separate vector database are not currently wired into the application.
 
 ## Future Scope
 
@@ -57,7 +57,7 @@ The following capabilities are planned and are not represented as completed feat
 3. **Learner notes:** support handwritten notes through an appropriate capture workflow (such as stylus or image input), make them searchable, and connect them to syllabus concepts. Add AI-generated full notes, quick revision, and weak-area summaries as separate, reviewable materials.
 4. **Adaptive learning plans:** use learner profile, diagnostic and practice evidence, available study time, and goals to adjust sequence and pacing.
 5. **Learning resources and subject-specific activities:** improve authoritative resource discovery and add projects, coding practice, exam simulations, and other activities where appropriate to the subject.
-6. **Optional multimodal tutoring:** evaluate live voice, richer visual explanations, and other expensive capabilities behind feature flags.
+6. **Optional multimodal tutoring:** evaluate richer visual explanations and avatar delivery behind feature flags.
 
 Firestore remains the intended source of truth for learner state. Larger uploaded artifacts may use Google Cloud Storage if and when note capture or other upload features are implemented. Feature development should keep AI output validated and avoid allowing a model to mutate learner state directly.
 
@@ -87,6 +87,7 @@ frontend/
 - Python and pip.
 - A Firebase project with Email/Password Authentication and Firestore enabled.
 - A Gemini API key for syllabus generation and AI tutoring.
+- Gemini Live voice enabled with `GEMINI_LIVE_ENABLED`, `GEMINI_LIVE_MODEL`, and `GEMINI_LIVE_SESSION_COST_RESERVE_USD` in the backend environment.
 
 ### Configure the frontend
 
@@ -144,7 +145,7 @@ npm run lint
 npx tsc --noEmit
 ```
 
-Unit tests use mocked AI and Firebase behavior. Live Gemini calls, deployed Firestore rules, browser microphone support, and production hosting limits require separate manual verification. See [Syllabus Setup](../docs/SYLLABUS_SETUP.md) and [Tutor Setup](../docs/TUTOR_SETUP.md) for feature-specific checks and known limitations.
+Unit tests use mocked AI and Firebase behavior. Live Gemini calls, deployed Firestore rules, browser audio streaming, and production hosting limits require separate manual verification. See [Syllabus Setup](../docs/SYLLABUS_SETUP.md) and [Tutor Setup](../docs/TUTOR_SETUP.md) for feature-specific checks and known limitations.
 
 ## Product and Feature Documentation
 

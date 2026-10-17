@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
 import { CourseSyllabus } from "@/components/course-syllabus";
+import { CourseNotesFolder } from "@/components/course-notes-folder";
 import {
   deleteLearningGoal,
   getLearningGoal,
@@ -30,6 +31,7 @@ export default function LearningWorkspacePage() {
   const [confirmUpdate, setConfirmUpdate] = useState(false);
   const [savingUpdate, setSavingUpdate] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [activeTab, setActiveTab] = useState<"learning" | "notes">("learning");
 
   useEffect(() => {
     if (!loading && !user) router.replace("/signin");
@@ -208,14 +210,17 @@ export default function LearningWorkspacePage() {
           {goal.additionalRequirements && <div className="mt-6 border-t border-[#edf0e9] pt-5"><h3 className="text-xs font-semibold uppercase tracking-wide text-[#89938c]">Additional requirements</h3><p className="mt-2 whitespace-pre-wrap text-sm leading-6">{goal.additionalRequirements}</p></div>}
         </section>
         </details>
-        <CourseSyllabus
+        <nav aria-label="Course sections" className="mt-6 flex gap-2">
+          {(["learning", "notes"] as const).map((tab) => <button aria-current={activeTab === tab ? "page" : undefined} className={`rounded-md border px-4 py-2 text-sm font-semibold ${activeTab === tab ? "border-[#1b6657] bg-[#1b6657] text-white" : "border-[#d9ddd5] bg-white text-[#1b6657]"}`} key={tab} onClick={() => setActiveTab(tab)} type="button">{tab === "learning" ? "Learning & Tutor" : "Notes"}</button>)}
+        </nav>
+        {activeTab === "notes" ? <CourseNotesFolder courseId={goal.id} key={goal.id} user={user} /> : <CourseSyllabus
           courseId={goal.id}
           courseTitle={goal.courseName}
           currentStudyHoursPerDay={goal.studyHoursPerDay ?? null}
           currentTimelineDays={currentTimelineDays}
           key={goal.id}
           timelineUpdated={Boolean(goal.timelineUpdated)}
-        />
+        />}
       </div>
 
       {confirmDelete && (

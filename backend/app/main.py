@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import JSONResponse
@@ -9,6 +11,14 @@ from app.api.routes.tutor import router as tutor_router
 from app.api.routes.mock_test import router as mock_test_router
 from app.api.routes.notes import router as notes_router
 from app.api.routes.practice import router as practice_router
+
+usage_logger = logging.getLogger("app.services.ai_usage")
+usage_logger.setLevel(logging.INFO)
+if not usage_logger.handlers:
+    usage_handler = logging.StreamHandler()
+    usage_handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+    usage_logger.addHandler(usage_handler)
+usage_logger.propagate = False
 
 app = FastAPI(title="LearnOS AI API")
 app.include_router(syllabus_router)
