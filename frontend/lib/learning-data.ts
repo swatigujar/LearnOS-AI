@@ -40,6 +40,7 @@ export async function createLearningGoal(userId: string, input: LearningGoalInpu
     updatedAt: serverTimestamp(),
   });
 
+  if (typeof window !== "undefined") window.dispatchEvent(new Event("learnos:learning-goals-changed"));
   return goalRef.id;
 }
 
@@ -105,6 +106,7 @@ export async function deleteLearningGoal(userId: string, goalId: string, idToken
     }
   }
   await deleteDoc(doc(db, "users", userId, "learningGoals", goalId));
+  if (typeof window !== "undefined") window.dispatchEvent(new Event("learnos:learning-goals-changed"));
 }
 
 export type LearningTimelineInput = {

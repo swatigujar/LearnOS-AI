@@ -157,8 +157,16 @@ export default function DashboardPage() {
       void progressLoader?.();
       void loadLearningData(false);
     }
+    function refreshAfterGoalChange() {
+      void progressLoader?.();
+      void loadLearningData(false);
+    }
     document.addEventListener("visibilitychange", refreshOnReturn);
-    return () => document.removeEventListener("visibilitychange", refreshOnReturn);
+    window.addEventListener("learnos:learning-goals-changed", refreshAfterGoalChange);
+    return () => {
+      document.removeEventListener("visibilitychange", refreshOnReturn);
+      window.removeEventListener("learnos:learning-goals-changed", refreshAfterGoalChange);
+    };
   }, [loadLearningData, progressLoader]);
 
   useEffect(() => {

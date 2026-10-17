@@ -111,10 +111,30 @@ class FakeFirestore:
                 "moduleTitle": "Basics", "syllabusVersion": 1,
             },
             "users/learner-a/learningGoals/pre-syllabus": {"courseName": "New course"},
+            "users/learner-a/courses/deleted-python": {
+                "courseName": "Deleted Python course",
+                "sourceLearningGoalId": "deleted-python",
+                "syllabusStatus": "ready",
+                "syllabusVersion": 1,
+            },
+            "users/learner-a/courses/deleted-python/syllabus/v1": {
+                "modules": [{"title": "Basics", "topics": [{"topic_id": "deleted-lesson", "title": "Deleted lesson"}]}],
+            },
+            "users/learner-a/courses/deleted-python/tutor/state": {
+                "topic_status": {"deleted-lesson": "completed"},
+            },
+            "users/learner-a/courses/deleted-python/tutorCompletions/deleted-event": {
+                "courseId": "deleted-python", "topicId": "deleted-lesson", "lessonTitle": "Deleted lesson",
+                "moduleTitle": "Basics", "completedAt": now,
+            },
             "users/learner-a/studySessions/planned-one": {
                 "courseId": "python", "lessonId": "module-1-topic-2", "lessonTitle": "Variables",
                 "startAt": now + timedelta(hours=2), "durationMinutes": 45,
                 "note": "Practice examples", "status": "scheduled",
+            },
+            "users/learner-a/studySessions/deleted-session": {
+                "courseId": "deleted-python", "startAt": now + timedelta(hours=3),
+                "durationMinutes": 30, "note": "Stale session", "status": "scheduled",
             },
             "users/learner-b/courses/private": {"courseName": "Private"},
             "users/learner-b/studySessions/secret": {
@@ -209,6 +229,17 @@ class StudyPlannerEndpointTests(unittest.TestCase):
         self.assertEqual(payload["weeklyCompletedLessons"], 1)
         self.assertEqual(sum(day["completedLessons"] for day in payload["weeklyActivity"]), 1)
 
+    def test_deleted_linked_course_is_excluded_from_planner_lists_and_aggregates(self):
+        response = self.overview()
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual({course["courseId"] for course in payload["courses"]}, {"python", "pre-syllabus"})
+        self.assertEqual({session["sessionId"] for session in payload["sessions"]}, {"planned-one"})
+        self.assertEqual({completion["eventId"] for completion in payload["completions"]}, {"v1-module-1-topic-1"})
+        self.assertEqual(payload["weeklyCompletedLessons"], 1)
+        self.assertEqual(self.database.docs["users/learner-a/courses/deleted-python/tutor/state"]["topic_status"]["deleted-lesson"], "completed")
+
     def test_create_is_idempotent_editable_cancellable_and_deletable(self):
         operation_id = "12345678-1234-4234-8234-123456789abc"
         start_at = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()
@@ -249,7 +280,7 @@ class StudyPlannerEndpointTests(unittest.TestCase):
         self.assertEqual(self.database.docs[self.database.course_path + "/tutor/state"]["topic_status"]["module-1-topic-2"], "not_started")
         timestamped_events = [
             data for path, data in self.database.docs.items()
-            if "tutorCompletions" in path and data.get("completedAt") is not None
+            if path.startswith(self.database.course_path + "/tutorCompletions/") and data.get("completedAt") is not None
         ]
         self.assertEqual(len(timestamped_events), 1)
 
@@ -261,6 +292,10 @@ class StudyPlannerEndpointTests(unittest.TestCase):
             "durationMinutes": 30, "note": "",
         }
         self.assertEqual(self.client.post("/api/planner/sessions", json=base).status_code, 404)
+
+        base.update(courseId="deleted-python", lessonId=None)
+        self.assertEqual(self.client.post("/api/planner/sessions", json=base).status_code, 404)
+        self.assertNotIn("users/learner-a/learningGoals/deleted-python", self.database.docs)
 
         base.update(courseId="python", lessonId="not-a-saved-lesson")
         self.assertEqual(self.client.post("/api/planner/sessions", json=base).status_code, 422)

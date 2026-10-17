@@ -79,6 +79,12 @@ export function isSupportedTimeZone(timeZone: string) {
   }
 }
 
+export function weeklyActivityUnavailableMessage(_error?: unknown) {
+  return _error == null
+    ? "Weekly activity could not be loaded."
+    : "Weekly activity is unavailable right now. Your lesson total could not be loaded.";
+}
+
 export function dateKeyInTimeZone(value: Date | string, timeZone: string) {
   const date = value instanceof Date ? value : new Date(value);
   if (!Number.isFinite(date.getTime())) return "";

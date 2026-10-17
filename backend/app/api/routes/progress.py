@@ -16,8 +16,13 @@ def get_progress_summary(user: dict = Depends(get_current_user)):
 
     database = get_firestore_client()
     courses_by_id = {}
-    for collection_name in ("learningGoals", "courses"):
-        snapshots = database.collection(f"users/{user_id}/{collection_name}").get() or []
+    goal_snapshots = database.collection(f"users/{user_id}/learningGoals").get() or []
+    active_goal_ids = {getattr(snapshot, "id", None) for snapshot in goal_snapshots}
+    active_goal_ids.discard(None)
+    for collection_name, snapshots in (
+        ("learningGoals", goal_snapshots),
+        ("courses", database.collection(f"users/{user_id}/courses").get() or []),
+    ):
         for snapshot in snapshots:
             course_id = getattr(snapshot, "id", None)
             if not course_id:
@@ -29,6 +34,14 @@ def get_progress_summary(user: dict = Depends(get_current_user)):
                 if collection_name == "learningGoals"
                 else {**existing_data, **saved_data}
             )
+
+    courses_by_id = {
+        course_id: course_data
+        for course_id, course_data in courses_by_id.items()
+        if not isinstance(course_data.get("sourceLearningGoalId"), str)
+        or not course_data["sourceLearningGoalId"]
+        or course_data["sourceLearningGoalId"] in active_goal_ids
+    }
 
     courses = []
     for course_id, course_data in courses_by_id.items():

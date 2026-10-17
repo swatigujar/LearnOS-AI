@@ -32,6 +32,7 @@ import {
   updatePlannerSessionStatus,
   validateSessionDraft,
   visibleCalendarDates,
+  weeklyActivityUnavailableMessage,
   type CalendarView,
   type PlannerOverview,
   type PlannerSession,
@@ -108,11 +109,10 @@ export function WeeklyLearningInsights({
   onOpenPlanner: () => void;
 }) {
   const { user } = useAuth();
-  const [reloadKey, setReloadKey] = useState(0);
   const timeZoneResult = useDetectedTimeZone();
   const timeZone = timeZoneResult.value;
   const effectiveTimeZone = timeZone ?? FALLBACK_TIME_ZONE;
-  const requestKey = `${user?.uid ?? "signed-out"}:${effectiveTimeZone}:${reloadKey}`;
+  const requestKey = `${user?.uid ?? "signed-out"}:${effectiveTimeZone}`;
   const [result, setResult] = useState<{ userId: string; requestKey: string; value: PlannerOverview | null; error: string } | null>(null);
   const currentResult = result?.requestKey === requestKey && result.userId === user?.uid ? result : null;
   const data = currentResult?.value ?? null;
@@ -160,10 +160,9 @@ export function WeeklyLearningInsights({
           {data && data.weeklyTarget != null && <p className="text-sm font-semibold text-[#365c4e]">{data.weeklyCompletedLessons} / {data.weeklyTarget}</p>}
         </div>
         {loading && !data ? <div className="mt-4 h-24 animate-pulse rounded-md bg-[#f0f4ef]" /> : error ? (
-          <div className="mt-4 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800" role="alert">
-            <p>{error}</p>
-            <button className="mt-2 inline-flex items-center gap-1.5 font-semibold underline underline-offset-2" onClick={() => setReloadKey((current) => current + 1)} type="button"><RefreshCcw aria-hidden="true" size={13} />Retry</button>
-          </div>
+          <p className="mt-4 rounded-md border border-[#e5e8e1] bg-[#f7f8f5] p-3 text-sm text-[#586761]" role="status">
+            {weeklyActivityUnavailableMessage(error)}
+          </p>
         ) : data && <>
           <div aria-label="Daily completed lesson counts for this week" className="mt-4 grid grid-cols-7 gap-2" role="img">
             {data.weeklyActivity.map((day) => {

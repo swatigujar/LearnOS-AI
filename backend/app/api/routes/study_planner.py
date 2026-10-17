@@ -56,6 +56,7 @@ def _iso(value):
 
 def _user_course_data(database, user_id):
     courses = {}
+    active_goal_ids = set()
     for collection_name in ("learningGoals", "courses"):
         snapshots = database.collection(f"users/{user_id}/{collection_name}").get() or []
         for snapshot in snapshots:
@@ -63,9 +64,17 @@ def _user_course_data(database, user_id):
             if not course_id:
                 continue
             saved = snapshot.to_dict() or {}
+            if collection_name == "learningGoals":
+                active_goal_ids.add(course_id)
             existing = courses.get(course_id, {})
             courses[course_id] = {**existing, **saved}
-    return courses
+    return {
+        course_id: data
+        for course_id, data in courses.items()
+        if not isinstance(data.get("sourceLearningGoalId"), str)
+        or not data["sourceLearningGoalId"]
+        or data["sourceLearningGoalId"] in active_goal_ids
+    }
 
 
 def _course_syllabus(database, user_id, course_id, course_data):
@@ -242,6 +251,8 @@ def get_planner_overview(
     sessions = []
     for snapshot in session_snapshots:
         session = _session_record(snapshot, course_data)
+        if session.courseId not in course_data:
+            continue
         start = _utc_datetime(session.startAt)
         if start and start_utc <= start < end_utc:
             sessions.append(session)

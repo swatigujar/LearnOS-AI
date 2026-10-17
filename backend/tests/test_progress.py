@@ -175,6 +175,16 @@ class ProgressRouteTests(unittest.TestCase):
             "users/learner-a/courses/shared-course/tutor/state": {
                 "topic_status": {"module-1-topic-1": "completed"},
             },
+            "users/learner-a/courses/deleted-course": {
+                "courseName": "Deleted Python course",
+                "sourceLearningGoalId": "deleted-course",
+                "syllabusStatus": "ready",
+                "syllabusVersion": 1,
+            },
+            "users/learner-a/courses/deleted-course/syllabus/v1": simple_syllabus("deleted-lesson"),
+            "users/learner-a/courses/deleted-course/tutor/state": {
+                "topic_status": {"deleted-lesson": "completed"},
+            },
             "users/learner-b/learningGoals/private-goal": {"courseName": "Private goal"},
             "users/learner-b/courses/private-course": {"courseName": "Private course"},
         })
@@ -201,6 +211,20 @@ class ProgressRouteTests(unittest.TestCase):
         self.assertEqual(courses["pre-syllabus"]["totalLessons"], 0)
         self.assertEqual(courses["shared-course"]["title"], "Saved course title")
         self.assertEqual(courses["shared-course"]["completedLessons"], 1)
+        self.assertEqual(payload["overallProgress"], 100.0)
+        self.assertNotIn("deleted-course", courses)
+
+    def test_deleted_linked_course_is_excluded_without_changing_source_data(self):
+        deleted_course = self.database.docs["users/learner-a/courses/deleted-course"]
+
+        response = self.client.get("/api/progress/summary")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["totalCourses"], 2)
+        self.assertEqual(response.json()["completedCourses"], 1)
+        self.assertNotIn("Deleted Python course", str(response.json()))
+        self.assertEqual(self.database.docs["users/learner-a/courses/deleted-course"], deleted_course)
+        self.assertIn("users/learner-a/courses/deleted-course/syllabus/v1", self.database.docs)
 
     def test_empty_user_course_sources_return_empty_summary(self):
         self.database.docs.clear()
