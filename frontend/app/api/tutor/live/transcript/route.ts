@@ -1,3 +1,5 @@
+import { backendFetch } from "@/lib/backend-fetch";
+
 export const maxDuration = 30;
 
 async function forward(request: Request) {
@@ -13,7 +15,7 @@ async function forward(request: Request) {
   }
   const backend = (process.env.BACKEND_API_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
   try {
-    const response = await fetch(`${backend}/api/tutor/live/transcript`, {
+    const response = await backendFetch(`${backend}/api/tutor/live/transcript`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: authorization },
       body: JSON.stringify(body),

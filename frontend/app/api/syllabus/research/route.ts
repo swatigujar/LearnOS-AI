@@ -1,3 +1,5 @@
+import { backendFetch } from "@/lib/backend-fetch";
+
 export async function POST(request: Request) {
   const authorization = request.headers.get("authorization");
   if (!authorization?.startsWith("Bearer ")) {
@@ -11,7 +13,7 @@ export async function POST(request: Request) {
   }
   try {
     const backendUrl = process.env.BACKEND_API_URL ?? "http://127.0.0.1:8000";
-    const response = await fetch(`${backendUrl.replace(/\/$/, "")}/api/syllabus/research`, {
+    const response = await backendFetch(`${backendUrl.replace(/\/$/, "")}/api/syllabus/research`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: authorization },
       body: JSON.stringify(body),

@@ -1,3 +1,5 @@
+import { backendFetch } from "@/lib/backend-fetch";
+
 export const maxDuration = 150;
 
 function authorized(request: Request) {
@@ -17,7 +19,7 @@ export async function GET(request: Request) {
   const topicId = query.get("topicId") ?? "";
   const syllabusVersion = query.get("syllabusVersion") ?? "";
   try {
-    const response = await fetch(`${backendUrl()}/api/mock-test/bank?courseId=${encodeURIComponent(courseId)}&topicId=${encodeURIComponent(topicId)}&syllabusVersion=${encodeURIComponent(syllabusVersion)}`, {
+    const response = await backendFetch(`${backendUrl()}/api/mock-test/bank?courseId=${encodeURIComponent(courseId)}&topicId=${encodeURIComponent(topicId)}&syllabusVersion=${encodeURIComponent(syllabusVersion)}`, {
       headers: { Authorization: authorization }, cache: "no-store", signal: AbortSignal.timeout(20_000),
     });
     return Response.json(await response.json(), { status: response.status });
@@ -38,7 +40,7 @@ export async function POST(request: Request) {
     ? { courseId: body.courseId, topicId: body.topicId, syllabusVersion: body.syllabusVersion, attemptId: body.attemptId }
     : { courseId: body.courseId, topicId: body.topicId, syllabusVersion: body.syllabusVersion, answers: body.answers ?? {} };
   try {
-    const response = await fetch(`${backendUrl()}/api/mock-test/${path}`, {
+    const response = await backendFetch(`${backendUrl()}/api/mock-test/${path}`, {
       method: "POST", headers: { "Content-Type": "application/json", Authorization: authorization },
       body: JSON.stringify(payload), cache: "no-store", signal: AbortSignal.timeout(145_000),
     });

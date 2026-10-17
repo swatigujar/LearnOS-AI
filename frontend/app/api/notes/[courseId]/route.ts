@@ -1,3 +1,5 @@
+import { backendFetch } from "@/lib/backend-fetch";
+
 export const maxDuration = 120;
 
 export async function DELETE(
@@ -11,7 +13,7 @@ export async function DELETE(
   const { courseId } = await params;
   const backend = (process.env.BACKEND_API_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
   try {
-    const response = await fetch(`${backend}/api/notes/${encodeURIComponent(courseId)}`, {
+    const response = await backendFetch(`${backend}/api/notes/${encodeURIComponent(courseId)}`, {
       method: "DELETE", headers: { Authorization: authorization }, cache: "no-store", signal: AbortSignal.timeout(115_000),
     });
     return Response.json(await response.json(), { status: response.status });

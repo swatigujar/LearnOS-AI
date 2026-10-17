@@ -1,3 +1,5 @@
+import { backendFetch } from "@/lib/backend-fetch";
+
 export async function GET(
   request: Request,
   { params }: { params: Promise<{ courseId: string; topicId: string }> },
@@ -9,7 +11,7 @@ export async function GET(
   const { courseId, topicId } = await params;
   const backend = (process.env.BACKEND_API_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
   try {
-    const response = await fetch(`${backend}/api/notes/${encodeURIComponent(courseId)}/${encodeURIComponent(topicId)}/image`, {
+    const response = await backendFetch(`${backend}/api/notes/${encodeURIComponent(courseId)}/${encodeURIComponent(topicId)}/image`, {
       headers: { Authorization: authorization }, cache: "no-store", signal: AbortSignal.timeout(30_000),
     });
     if (!response.ok) {
