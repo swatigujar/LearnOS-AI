@@ -264,6 +264,35 @@ class TutorEndpointTests(unittest.TestCase):
                          "Let's learn Variables next.")
         self.assertEqual(self.model.call_count, 1)
 
+    def test_chat_request_switches_with_a_shortened_topic_name(self):
+        path = self.database.course_path
+        syllabus = self.database.docs[path + "/syllabus/v1"]
+        topic = syllabus["modules"][0]["topics"][0]
+        topic["estimated_minutes"] /= 2
+        syllabus["modules"][0]["topics"].append({
+            **topic, "topic_id": "module-1-topic-2", "title": "Functions and Parameters",
+        })
+
+        switched = self.action("message", message="Can we learn functions now?")
+
+        self.assertEqual(switched.status_code, 200, switched.text)
+        self.assertEqual(switched.json()["active_topic_id"], "module-1-topic-2")
+        self.assertEqual(self.model.call_count, 0)
+
+    def test_chat_request_can_switch_to_the_next_syllabus_topic(self):
+        path = self.database.course_path
+        syllabus = self.database.docs[path + "/syllabus/v1"]
+        topic = syllabus["modules"][0]["topics"][0]
+        topic["estimated_minutes"] /= 2
+        syllabus["modules"][0]["topics"].append({
+            **topic, "topic_id": "module-1-topic-2", "title": "Variables",
+        })
+
+        switched = self.action("message", message="Let's move to the next topic.")
+
+        self.assertEqual(switched.status_code, 200, switched.text)
+        self.assertEqual(switched.json()["active_topic_id"], "module-1-topic-2")
+
     def test_unrelated_chat_request_redirects_without_unlocking_confirmation(self):
         self.model.return_value = make_reply().model_copy(update={
             "intent": "redirect",

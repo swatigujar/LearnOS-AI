@@ -141,11 +141,21 @@ export function useTutor(courseId: string, enabled: boolean) {
     setBusy(true);
     setError("");
     try {
-      const saved = await requestTutor(user, courseId, {
+      let saved = await requestTutor(user, courseId, {
         courseId, topicId: topicId ?? currentState.active_topic_id, action, message,
         operationId: crypto.randomUUID(), revision: currentState.revision,
         ...(action === "confirm" ? { conceptIndex: currentState.conversation.concept_index } : {}),
       });
+      if (action === "message" && saved.active_topic_id !== currentState.active_topic_id) {
+        saved = await requestTutor(user, courseId, {
+          courseId,
+          topicId: saved.active_topic_id,
+          action: "start",
+          message: "",
+          operationId: crypto.randomUUID(),
+          revision: saved.revision,
+        });
+      }
       stateRef.current = saved;
       setState(saved);
       return true;

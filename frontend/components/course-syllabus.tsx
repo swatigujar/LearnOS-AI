@@ -146,10 +146,6 @@ export function CourseSyllabus({
   const moduleReady = !!activeModule && tutor.state?.module_status[activeModule.module_id] !== "completed"
     && activeModule.topics.every((topic) => tutor.state?.topic_status[topic.topic_id] === "completed");
 
-  function canSelect(topicId: string) {
-    return lessons.some((topic) => topic.topic_id === topicId);
-  }
-
   async function selectTopic(topicId: string) {
     if (await tutor.perform("select", topicId)) setExpandedTopics((current) => ({ ...current, [topicId]: true }));
   }
@@ -199,7 +195,6 @@ export function CourseSyllabus({
                   <button aria-expanded={expandedModules[module.module_id] ?? index === 0} aria-controls={`module-${module.module_id}`} className="flex w-full items-start gap-2 py-2 text-left focus-visible:outline-2 focus-visible:outline-[#1b6657]" onClick={() => {
                     const opening = !(expandedModules[module.module_id] ?? index === 0);
                     setExpandedModules((current) => ({ ...current, [module.module_id]: opening }));
-                    if (opening && !tutor.loading && !tutor.busy) void selectTopic(module.topics[0].topic_id);
                   }} type="button">
                     {(expandedModules[module.module_id] ?? index === 0) ? <ChevronDown aria-hidden="true" className="mt-1 shrink-0" size={16} /> : <ChevronRight aria-hidden="true" className="mt-1 shrink-0" size={16} />}
                     <span className="min-w-0"><span className="font-semibold">{index + 1}. {module.title}</span>{tutor.state?.module_status[module.module_id] === "completed" && <CheckCircle2 aria-label="Module completed" className="ml-2 inline text-green-700" size={16} />}<span className="mt-0.5 block text-xs text-[#68736d]">{module.estimated_hours} hours <span aria-hidden="true">·</span> {module.topics.length} topics</span></span>
@@ -217,7 +212,7 @@ export function CourseSyllabus({
                       return (
                       <li key={topic.topic_id}>
                         <div className={`flex min-w-0 items-start rounded-md border border-l-4 transition-colors ${selected ? "border-[#1b6657] border-l-[#1b6657] bg-[#eaf4ef] text-[#1b6657]" : completed ? "border-[#dce9df] border-l-[#5a8a67] bg-[#f4f8f4]" : inProgress ? "border-[#eadfc8] border-l-[#c48b32] bg-[#fbf8f1]" : "border-transparent border-l-[#d9ddd5] hover:bg-[#f6f8f5]"}`}>
-                          <button aria-pressed={selected} className="min-w-0 flex-1 rounded-md p-3 text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1b6657] disabled:cursor-not-allowed disabled:opacity-50" disabled={tutor.loading || tutor.busy || !canSelect(topic.topic_id)} onClick={() => void selectTopic(topic.topic_id)} title={canSelect(topic.topic_id) ? "Open lesson" : "Complete and confirm the preceding lessons first"} type="button">
+                          <button aria-pressed={selected} className="min-w-0 flex-1 rounded-md p-3 text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1b6657] disabled:cursor-not-allowed disabled:opacity-50" disabled={tutor.loading || tutor.busy} onClick={() => void selectTopic(topic.topic_id)} title="Open lesson" type="button">
                             <span className="flex min-w-0 items-start gap-2">
                               {completed && <CheckCircle2 aria-hidden="true" className="mt-0.5 shrink-0 text-green-700" size={16} />}
                               <span className="min-w-0 flex-1 break-words font-medium">{topic.title}</span>
@@ -250,7 +245,7 @@ export function CourseSyllabus({
         </div>
       )}
     </section>
-    <AiTutor courseId={courseId} controller={tutor} lesson={selectedLesson} moduleReady={moduleReady} nextTopicId={nextLesson && canSelect(nextLesson.topic_id) ? nextLesson.topic_id : undefined} />
+    <AiTutor courseId={courseId} controller={tutor} lesson={selectedLesson} moduleReady={moduleReady} nextTopicId={nextLesson?.topic_id} />
     </div>
   );
 }

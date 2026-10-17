@@ -89,17 +89,54 @@ def _conversation_document(conversation, state):
 def _requested_topic_id(syllabus, message, active_topic_id):
     normalized = re.sub(r"[^\w]+", " ", message.casefold(), flags=re.UNICODE).strip()
     if not re.search(
-        r"\b(?:learn|teach me|switch|go to|move to|study|estudiar|aprender|apprendre|étudier|lernen)\b"
-        r"|सीख|पढ़|शुरू|बदल|शिक|अभ्यास",
+        r"\b(?:learn|teach|switch|go|move|study|start|begin|cover|next|change|want|like|can|let|estudiar|aprender|apprendre|étudier|lernen)\b"
+        r"|सीख|पढ़|शुरू|बदल|शिक|अभ्यास|चलो",
         normalized,
     ):
         return None
-    matches = []
-    for _, topic in ordered_topics(syllabus):
+    topics = [topic for _, topic in ordered_topics(syllabus)]
+    active_index = next((index for index, topic in enumerate(topics) if topic.topic_id == active_topic_id), -1)
+    if re.search(r"\b(?:next|following|another)\s+(?:topic|lesson)\b", normalized):
+        return topics[active_index + 1].topic_id if 0 <= active_index < len(topics) - 1 else None
+
+    stop_words = {"a", "an", "and", "at", "for", "from", "in", "intro", "introduction", "of", "on", "the", "to", "with"}
+    message_terms = set(normalized.split()) - stop_words
+    title_terms = {}
+    normalized_titles = {}
+    for topic in topics:
+        if topic.topic_id == active_topic_id:
+            continue
         title = re.sub(r"[^\w]+", " ", topic.title.casefold(), flags=re.UNICODE).strip()
-        if topic.topic_id != active_topic_id and title and title in normalized:
-            matches.append(topic)
-    return max(matches, key=lambda topic: len(topic.title)).topic_id if matches else None
+        terms = set(title.split()) - stop_words
+        if not terms:
+            continue
+        normalized_titles[topic.topic_id] = title
+        title_terms[topic.topic_id] = terms
+
+    exact_matches = [topic for topic in topics
+                     if topic.topic_id in normalized_titles and normalized_titles[topic.topic_id] in normalized]
+    if exact_matches:
+        return max(exact_matches, key=lambda topic: len(normalized_titles[topic.topic_id])).topic_id
+
+    term_frequency = {}
+    for terms in title_terms.values():
+        for term in terms:
+            term_frequency[term] = term_frequency.get(term, 0) + 1
+    scored = []
+    for topic in topics:
+        terms = title_terms.get(topic.topic_id, set())
+        hits = terms & message_terms
+        unique_hits = {term for term in hits if term_frequency[term] == 1}
+        if unique_hits:
+            scored.append((2, len(unique_hits), len(hits), topic))
+        elif len(hits) >= 2 and len(hits) / len(terms) >= 0.5:
+            scored.append((1, len(hits), len(hits) / len(terms), topic))
+    if not scored:
+        return None
+    scored.sort(key=lambda item: item[:3], reverse=True)
+    if len(scored) > 1 and scored[0][:3] == scored[1][:3]:
+        return None
+    return scored[0][3].topic_id
 
 
 def _recent_learning_history(course_ref, progress_epoch=0, limit=12):

@@ -47,6 +47,8 @@ export function AiTutor({ courseId, controller, lesson, nextTopicId, moduleReady
   const input = useRef<HTMLTextAreaElement>(null);
   const conversationArea = useRef<HTMLDivElement>(null);
   const live = useLiveTutor(courseId, lesson?.topic_id ?? "", state?.progress_epoch ?? 0, acceptSavedState);
+  const previousTopicId = useRef(lesson?.topic_id ?? "");
+  const reconnectLiveAfterSwitch = useRef(false);
   const messages = state?.conversation.messages ?? [];
   let currentExchangeStart = 0;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -67,6 +69,22 @@ export function AiTutor({ courseId, controller, lesson, nextTopicId, moduleReady
     const area = conversationArea.current;
     if (area) area.scrollTop = area.scrollHeight;
   }, [state?.active_topic_id, state?.conversation.messages, live.partialTranscript]);
+
+  useEffect(() => {
+    const topicId = lesson?.topic_id ?? "";
+    if (previousTopicId.current === topicId) return;
+    previousTopicId.current = topicId;
+    if (topicId && mode === "voice" && live.status !== "idle") {
+      reconnectLiveAfterSwitch.current = true;
+      void live.disconnect(false);
+    }
+  }, [lesson?.topic_id, live.disconnect, live.status, mode]);
+
+  useEffect(() => {
+    if (!reconnectLiveAfterSwitch.current || mode !== "voice" || live.status !== "idle" || !lesson) return;
+    reconnectLiveAfterSwitch.current = false;
+    void live.connect();
+  }, [lesson, live.connect, live.status, mode]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
