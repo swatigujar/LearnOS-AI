@@ -1,3 +1,5 @@
+import { backendFetch } from "@/lib/backend-fetch";
+
 export const maxDuration = 150;
 
 export async function POST(request: Request) {
@@ -13,7 +15,7 @@ export async function POST(request: Request) {
   }
   try {
     const backendUrl = process.env.BACKEND_API_URL ?? "http://127.0.0.1:8000";
-    const response = await fetch(`${backendUrl.replace(/\/$/, "")}/api/syllabus/generate`, {
+    const response = await backendFetch(`${backendUrl.replace(/\/$/, "")}/api/syllabus/generate`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: authorization },
       body: JSON.stringify(body),

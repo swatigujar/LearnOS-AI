@@ -1,3 +1,5 @@
+import { backendFetch } from "@/lib/backend-fetch";
+
 export const maxDuration = 150;
 
 async function forward(request: Request, method: "GET" | "POST") {
@@ -17,7 +19,7 @@ async function forward(request: Request, method: "GET" | "POST") {
   const courseId = new URL(request.url).searchParams.get("courseId") ?? "";
   const path = method === "GET" ? `/state?courseId=${encodeURIComponent(courseId)}` : "/action";
   try {
-    const response = await fetch(`${backend}/api/tutor${path}`, {
+    const response = await backendFetch(`${backend}/api/tutor${path}`, {
       method,
       headers: { "Content-Type": "application/json", Authorization: authorization },
       ...(method === "POST" ? { body: JSON.stringify(body) } : {}),

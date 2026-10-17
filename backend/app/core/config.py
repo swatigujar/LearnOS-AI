@@ -2,13 +2,12 @@ import os
 from pathlib import Path
 from datetime import date, datetime, timezone
 
-from dotenv import dotenv_values, load_dotenv
+from dotenv import load_dotenv
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(BACKEND_ROOT / ".env")
-_backend_env = dotenv_values(BACKEND_ROOT / ".env")
 
-GEMINI_API_KEY = _backend_env.get("GEMINI_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", os.getenv("AI_MODEL", "gemini-3.8-flash"))
 GEMINI_LIVE_ENABLED = os.getenv("GEMINI_LIVE_ENABLED", "true").lower() == "true"
 GEMINI_LIVE_MODEL = os.getenv("GEMINI_LIVE_MODEL", "gemini-3.8-live")
