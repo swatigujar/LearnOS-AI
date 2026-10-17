@@ -29,9 +29,10 @@ logger = logging.getLogger(__name__)
 
 
 class UsageLimitError(Exception):
-    def __init__(self, message: str, status_code: int = 429):
+    def __init__(self, message: str, status_code: int = 429, source: str = "application_limit"):
         super().__init__(message)
         self.status_code = status_code
+        self.source = source
 
 
 def _pricing() -> tuple[float, float]:

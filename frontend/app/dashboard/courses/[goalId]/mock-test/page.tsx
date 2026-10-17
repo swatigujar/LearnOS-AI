@@ -3,10 +3,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { ChevronDown } from "lucide-react";
 import { doc, onSnapshot } from "firebase/firestore";
 import { useAuth } from "@/lib/auth-context";
 import { db } from "@/lib/firebase";
+import { Select } from "@/components/ui/select";
 
 type SavedSyllabus = {
   modules?: {
@@ -265,8 +265,6 @@ export default function MockTestPage() {
   const [syllabusVersion, setSyllabusVersion] = useState(0);
   const [syllabus, setSyllabus] = useState<SavedSyllabus | null>(null);
   const [selectedTopicId, setSelectedTopicId] = useState("");
-  const [topicMenuOpen, setTopicMenuOpen] = useState(false);
-  const topicMenu = useRef<HTMLDetailsElement>(null);
   const lastSyllabusVersion = useRef<number | null>(null);
   const activeBankKey = useRef("");
   const [loading, setLoading] = useState(true);
@@ -336,16 +334,6 @@ export default function MockTestPage() {
       stopSyllabus?.();
     };
   }, [params.goalId, user]);
-
-  useEffect(() => {
-    function closeTopicMenu(event: PointerEvent) {
-      if (topicMenu.current && !topicMenu.current.contains(event.target as Node)) {
-        topicMenu.current.open = false;
-      }
-    }
-    document.addEventListener("pointerdown", closeTopicMenu);
-    return () => document.removeEventListener("pointerdown", closeTopicMenu);
-  }, []);
 
   const topics = useMemo<SavedTopic[]>(() => (syllabus?.modules ?? []).flatMap((module) =>
     (module.topics ?? []).map((topic) => ({
@@ -577,39 +565,13 @@ export default function MockTestPage() {
               {topics.length > 0 ? (
                 <div className="mt-5">
                   <p className="block text-sm font-medium" id="mock-test-topic-label">Lesson or topic</p>
-                  <details
-                    className="relative z-20 mt-1.5"
-                    id="mock-test-topic"
-                    onKeyDown={(event) => {
-                      if (event.key === "Escape" && topicMenu.current?.open) {
-                        topicMenu.current.open = false;
-                        topicMenu.current.querySelector("summary")?.focus();
-                      }
-                    }}
-                    onToggle={(event) => setTopicMenuOpen(event.currentTarget.open)}
-                    ref={topicMenu}
-                  >
-                    <summary aria-controls="mock-test-topic-options" aria-expanded={topicMenuOpen} aria-labelledby="mock-test-topic-label mock-test-topic-selected" className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 rounded-md border border-[#d9ddd5] bg-white px-3 py-2.5 text-sm font-medium outline-none hover:border-[#89938c] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1b6657] [&::-webkit-details-marker]:hidden">
-                      <span className="min-w-0 break-words" id="mock-test-topic-selected">{selectedTopic ? `${selectedTopic.moduleTitle}: ${selectedTopic.title}` : "Choose a lesson or topic"}</span>
-                      <ChevronDown aria-hidden="true" className={`shrink-0 transition-transform ${topicMenuOpen ? "rotate-180" : ""}`} size={16} />
-                    </summary>
-                    <div aria-label="Available lesson topics" className="absolute left-0 right-0 top-full z-50 mt-1 max-h-64 overflow-y-auto overscroll-contain rounded-md border border-[#d9ddd5] bg-white p-1 shadow-lg" id="mock-test-topic-options">
-                      {topics.map((topic) => (
-                        <button
-                          aria-pressed={selectedTopic?.id === topic.id}
-                          className={`block min-h-11 w-full rounded px-3 py-2 text-left text-sm leading-5 focus-visible:outline-2 focus-visible:outline-[#1b6657] ${selectedTopic?.id === topic.id ? "bg-[#eaf4ef] font-semibold text-[#1b6657]" : "text-[#34423c] hover:bg-[#f6f8f5]"}`}
-                          key={topic.id}
-                          onClick={() => {
-                            changeTopic(topic.id);
-                            if (topicMenu.current) topicMenu.current.open = false;
-                          }}
-                          type="button"
-                        >
-                          <span className="block break-words">{topic.moduleTitle}: {topic.title}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </details>
+                  <Select
+                    className="mt-1.5"
+                    label="Lesson or topic"
+                    onValueChange={changeTopic}
+                    options={topics.map((topic) => ({ value: topic.id, label: `${topic.moduleTitle}: ${topic.title}` }))}
+                    value={selectedTopic?.id ?? ""}
+                  />
                   {selectedTopic && <p className="mt-2 text-sm leading-6 text-[#68736d]">{selectedTopic.description}</p>}
                 </div>
               ) : (

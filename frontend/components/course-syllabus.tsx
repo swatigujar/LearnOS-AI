@@ -53,6 +53,7 @@ export function CourseSyllabus({
   const [expandedModules, setExpandedModules] = useState<Record<string, boolean>>({});
   const [expandedTopics, setExpandedTopics] = useState<Record<string, boolean>>({});
   const tutor = useTutor(courseId, status === "ready" && !!syllabus);
+  const performTutor = tutor.perform;
 
   useEffect(() => {
     if (!user) return;
@@ -137,11 +138,17 @@ export function CourseSyllabus({
   const lessons = status === "ready" ? syllabus?.modules.flatMap((module) =>
     module.topics.map((topic) => ({ ...topic, moduleTitle: module.title, moduleId: module.module_id }))
   ) ?? [] : [];
-  const selectedLesson = lessons.find((topic) => topic.topic_id === tutor.state?.active_topic_id) ?? lessons[0];
+  const activeLesson = lessons.find((topic) => topic.topic_id === tutor.state?.active_topic_id);
+  const selectedLesson = activeLesson && tutor.state?.topic_status[activeLesson.topic_id] !== "completed"
+    ? activeLesson
+    : lessons.find((topic) => tutor.state?.topic_status[topic.topic_id] === "in_progress")
+      ?? lessons.find((topic) => tutor.state?.topic_status[topic.topic_id] !== "completed")
+      ?? lessons[0];
   const completedTopics = lessons.filter((topic) => tutor.state?.topic_status[topic.topic_id] === "completed").length;
   const progress = lessons.length ? Math.round(completedTopics / lessons.length * 100) : 0;
   const selectedIndex = lessons.findIndex((topic) => topic.topic_id === selectedLesson?.topic_id);
-  const nextLesson = lessons[selectedIndex + 1];
+  const nextLesson = lessons.slice(selectedIndex + 1).find((topic) => tutor.state?.topic_status[topic.topic_id] !== "completed")
+    ?? lessons.find((topic) => tutor.state?.topic_status[topic.topic_id] !== "completed");
   const activeModule = syllabus?.modules.find((module) => module.module_id === selectedLesson?.moduleId);
   const moduleReady = !!activeModule && tutor.state?.module_status[activeModule.module_id] !== "completed"
     && activeModule.topics.every((topic) => tutor.state?.topic_status[topic.topic_id] === "completed");
@@ -149,6 +156,13 @@ export function CourseSyllabus({
   async function selectTopic(topicId: string) {
     if (await tutor.perform("select", topicId)) setExpandedTopics((current) => ({ ...current, [topicId]: true }));
   }
+
+  const selectedTopicId = selectedLesson?.topic_id;
+  useEffect(() => {
+    if (!tutor.loading && !tutor.busy && selectedTopicId && tutor.state?.active_topic_id !== selectedTopicId) {
+      void performTutor("select", selectedTopicId);
+    }
+  }, [performTutor, selectedTopicId, tutor.busy, tutor.loading, tutor.state?.active_topic_id]);
 
   return (
     <div className="mt-6 grid min-w-0 border-y border-[#e0e2d9] bg-white lg:grid-cols-[minmax(0,2.2fr)_minmax(0,2.8fr)]">
