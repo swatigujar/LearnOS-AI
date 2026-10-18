@@ -18,8 +18,15 @@ export async function GET(request: Request) {
   const courseId = query.get("courseId") ?? "";
   const topicId = query.get("topicId") ?? "";
   const syllabusVersion = query.get("syllabusVersion") ?? "";
+  const history = query.get("action") === "attempts";
+  const params = new URLSearchParams({ courseId });
+  if (!history) {
+    params.set("topicId", topicId);
+    params.set("syllabusVersion", syllabusVersion);
+    if (query.has("attemptId")) params.set("attemptId", query.get("attemptId") ?? "");
+  }
   try {
-    const response = await backendFetch(`${backendUrl()}/api/mock-test/bank?courseId=${encodeURIComponent(courseId)}&topicId=${encodeURIComponent(topicId)}&syllabusVersion=${encodeURIComponent(syllabusVersion)}`, {
+    const response = await backendFetch(`${backendUrl()}/api/mock-test/${history ? "attempts" : "bank"}?${params}`, {
       headers: { Authorization: authorization }, cache: "no-store", signal: AbortSignal.timeout(20_000),
     });
     return Response.json(await response.json(), { status: response.status });
@@ -38,7 +45,7 @@ export async function POST(request: Request) {
   if (!path) return Response.json({ detail: "Unsupported mock-test action." }, { status: 400 });
   const payload = path === "start"
     ? { courseId: body.courseId, topicId: body.topicId, syllabusVersion: body.syllabusVersion, attemptId: body.attemptId }
-    : { courseId: body.courseId, topicId: body.topicId, syllabusVersion: body.syllabusVersion, answers: body.answers ?? {} };
+    : { courseId: body.courseId, topicId: body.topicId, syllabusVersion: body.syllabusVersion, attemptId: body.attemptId, answers: body.answers ?? {} };
   try {
     const response = await backendFetch(`${backendUrl()}/api/mock-test/${path}`, {
       method: "POST", headers: { "Content-Type": "application/json", Authorization: authorization },

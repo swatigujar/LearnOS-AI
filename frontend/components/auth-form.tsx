@@ -49,19 +49,20 @@ export function AuthForm({ mode }: { mode: "signup" | "signin" }) {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-[#f6f5ef] px-5 py-12 text-[#1b302b]">
+    <main className="flex min-h-screen items-center justify-center bg-[#FFF8F1] px-5 py-12 text-[#29213D]">
       <section className="w-full max-w-md">
-        <Link href="/" className="text-sm font-semibold tracking-tight">
-          LearnOS <span className="text-[#d16445]">AI</span>
+        <Link href="/" className="inline-flex items-center gap-2.5 text-sm font-bold tracking-tight text-[#29213D]">
+          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#642BD8] text-white">L</span>
+          <span>LearnOS <span className="font-medium text-[#642BD8]">AI</span></span>
         </Link>
-        <div className="mt-10 rounded-lg border border-[#e2e3db] bg-white p-7 sm:p-9">
-          <p className="text-xs font-bold uppercase tracking-[0.16em] text-[#d16445]">
+        <div className="learnos-card mt-8 p-7 shadow-[0_22px_65px_-48px_rgba(74,40,95,0.28)] sm:p-9">
+          <p className="inline-flex rounded-full border border-[#E7DDF8] bg-[#FCF9FF] px-3 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-[#642BD8]">
             {isSignup ? "Start with a goal" : "Welcome back"}
           </p>
-          <h1 className="mt-3 text-3xl font-semibold tracking-tight">
+          <h1 className="mt-3 text-3xl font-bold tracking-[-0.035em] text-[#29213D]">
             {isSignup ? "Create your account" : "Sign in to LearnOS"}
           </h1>
-          <p className="mt-2 text-sm leading-6 text-[#68736d]">
+          <p className="mt-2 text-sm leading-6 text-[#756B80]">
             {isSignup ? "Your personal learning space is one step away." : "Pick up where your learning left off."}
           </p>
 
@@ -71,7 +72,7 @@ export function AuthForm({ mode }: { mode: "signup" | "signin" }) {
                 Name
                 <input
                   autoComplete="name"
-                  className="mt-1.5 block w-full rounded-md border border-[#d9ddd5] px-3 py-2.5 font-normal outline-none transition focus:border-[#1b302b] focus:ring-2 focus:ring-[#1b302b]/10"
+                  className="mt-1.5 block w-full rounded-xl border border-[#EEE5E0] bg-white px-3.5 py-3 font-normal outline-none transition focus:border-[#642BD8] focus:ring-2 focus:ring-[#642BD8]/15"
                   onChange={(event) => setName(event.target.value)}
                   required
                   value={name}
@@ -82,7 +83,7 @@ export function AuthForm({ mode }: { mode: "signup" | "signin" }) {
               Email
               <input
                 autoComplete="email"
-                className="mt-1.5 block w-full rounded-md border border-[#d9ddd5] px-3 py-2.5 font-normal outline-none transition focus:border-[#1b302b] focus:ring-2 focus:ring-[#1b302b]/10"
+                className="mt-1.5 block w-full rounded-xl border border-[#EEE5E0] bg-white px-3.5 py-3 font-normal outline-none transition focus:border-[#642BD8] focus:ring-2 focus:ring-[#642BD8]/15"
                 onChange={(event) => setEmail(event.target.value)}
                 required
                 type="email"
@@ -93,7 +94,7 @@ export function AuthForm({ mode }: { mode: "signup" | "signin" }) {
               Password
               <input
                 autoComplete={isSignup ? "new-password" : "current-password"}
-                className="mt-1.5 block w-full rounded-md border border-[#d9ddd5] px-3 py-2.5 font-normal outline-none transition focus:border-[#1b302b] focus:ring-2 focus:ring-[#1b302b]/10"
+                className="mt-1.5 block w-full rounded-xl border border-[#EEE5E0] bg-white px-3.5 py-3 font-normal outline-none transition focus:border-[#642BD8] focus:ring-2 focus:ring-[#642BD8]/15"
                 minLength={isSignup ? 6 : undefined}
                 onChange={(event) => setPassword(event.target.value)}
                 required
@@ -103,7 +104,7 @@ export function AuthForm({ mode }: { mode: "signup" | "signin" }) {
             </label>
             {error && <p className="text-sm text-red-700" role="alert">{error}</p>}
             <button
-              className="w-full rounded-md bg-[#1b302b] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#28473f] disabled:cursor-not-allowed disabled:opacity-60"
+              className="learnos-primary-button w-full px-4 py-3 text-sm disabled:cursor-not-allowed disabled:opacity-60"
               disabled={submitting || authLoading}
               type="submit"
             >
@@ -111,9 +112,9 @@ export function AuthForm({ mode }: { mode: "signup" | "signin" }) {
             </button>
           </form>
 
-          <p className="mt-6 text-center text-sm text-[#68736d]">
+          <p className="mt-6 text-center text-sm text-[#756B80]">
             {isSignup ? "Already have an account?" : "New to LearnOS?"}{" "}
-            <Link className="font-semibold text-[#1b302b] underline underline-offset-4" href={isSignup ? "/signin" : "/signup"}>
+            <Link className="font-semibold text-[#29213D] underline underline-offset-4" href={isSignup ? "/signin" : "/signup"}>
               {isSignup ? "Sign in" : "Create an account"}
             </Link>
           </p>

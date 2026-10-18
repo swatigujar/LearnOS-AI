@@ -8,6 +8,8 @@ from app.api.routes.syllabus import router as syllabus_router
 from app.api.routes.tutor import router as tutor_router
 from app.api.routes.mock_test import router as mock_test_router
 from app.api.routes.notes import router as notes_router
+from app.api.routes.progress import router as progress_router
+from app.api.routes.practice import router as practice_router
 
 usage_logger = logging.getLogger("app.services.ai_usage")
 usage_logger.setLevel(logging.INFO)
@@ -23,6 +25,8 @@ app.include_router(ai_router)
 app.include_router(tutor_router)
 app.include_router(mock_test_router)
 app.include_router(notes_router)
+app.include_router(progress_router)
+app.include_router(practice_router)
 
 
 @app.exception_handler(HTTPException)

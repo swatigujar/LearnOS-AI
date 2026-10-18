@@ -282,13 +282,6 @@ export function useLiveTutor(
     if (!content) return;
     if (content.interrupted) {
       stopPlayback();
-      const interruptedTutorText = outputTranscriptRef.current.trim();
-      if (interruptedTutorText) {
-        const usage = usageRef.current;
-        usageRef.current = null;
-        enqueueTranscript([{ role: "assistant", text: interruptedTutorText.slice(0, 2000) }], usage);
-        void savePendingTranscripts();
-      }
       outputTranscriptRef.current = "";
       setPartialTranscript([typedInputRef.current.join(" "), inputTranscriptRef.current].filter(Boolean).join("\n"));
     }
@@ -313,15 +306,16 @@ export function useLiveTutor(
         void savePendingTranscripts();
       }, 300);
     }
-  }, [enqueueTranscript, playAudioChunk, queueCurrentTurn, savePendingTranscripts, stopPlayback]);
+  }, [playAudioChunk, queueCurrentTurn, savePendingTranscripts, stopPlayback]);
 
   const disconnect = useCallback(async (saveTranscript = true) => {
     connectionGenerationRef.current += 1;
+    const hasCompletedTurnPending = transcriptFlushRef.current !== null;
     if (transcriptFlushRef.current) {
       clearTimeout(transcriptFlushRef.current);
       transcriptFlushRef.current = null;
     }
-    if (saveTranscript) queueCurrentTurn();
+    if (saveTranscript && hasCompletedTurnPending) queueCurrentTurn();
     const session = sessionRef.current;
     sessionRef.current = null;
     if (session) session.close();
@@ -373,6 +367,16 @@ export function useLiveTutor(
         return false;
       }
       microphoneRef.current = microphone;
+      for (const track of microphone.getAudioTracks()) {
+        track.addEventListener("ended", () => {
+          if (!activeRef.current || microphoneRef.current !== microphone) return;
+          void (async () => {
+            await disconnect(false);
+            await savePendingTranscripts();
+            if (activeRef.current) setError("Microphone input ended. Check microphone access and start Live Voice again.");
+          })();
+        }, { once: true });
+      }
       const capture = new AudioContext({ sampleRate: 16000 });
       microphoneContextRef.current = capture;
       const workletUrl = URL.createObjectURL(new Blob([workletSource], { type: "application/javascript" }));
@@ -431,12 +435,23 @@ export function useLiveTutor(
           },
           onerror: (event) => {
             if (!connectionReady && activeRef.current) rejectPendingConnection(new Error(event.message));
-            else if (isConnectedSession() && activeRef.current) setError(friendlyTutorFailure(new Error(event.message)));
+            else if (isConnectedSession() && activeRef.current) {
+              void (async () => {
+                await disconnect(false);
+                await savePendingTranscripts();
+                if (activeRef.current) setError(friendlyTutorFailure(new Error(event.message)));
+              })();
+            }
           },
           onclose: () => {
             if (!isConnectedSession()) return;
             sessionRef.current = null;
-            void disconnect(true);
+            void (async () => {
+              await disconnect(true);
+              if (activeRef.current) {
+                setError("The Live Voice connection ended. Start a new session or continue in chat.");
+              }
+            })();
           },
         },
       }), connectionFailure]), remainingTime(), (lateSession) => lateSession.close());

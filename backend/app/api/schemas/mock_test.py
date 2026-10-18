@@ -12,12 +12,15 @@ class MockTestRequest(BaseModel):
     syllabusVersion: int = Field(ge=1)
 
 
-class MockTestSubmitRequest(MockTestRequest):
-    answers: dict[str, StrictInt] = Field(default_factory=dict, max_length=6)
+ATTEMPT_ID_PATTERN = r"^[0-9a-fA-F-]{36}$"
 
 
 class MockTestStartRequest(MockTestRequest):
-    attemptId: str = Field(min_length=36, max_length=36, pattern=r"^[0-9a-fA-F-]{36}$")
+    attemptId: str = Field(min_length=36, max_length=36, pattern=ATTEMPT_ID_PATTERN)
+
+
+class MockTestSubmitRequest(MockTestStartRequest):
+    answers: dict[str, StrictInt] = Field(default_factory=dict, max_length=10)
 
 
 class GeneratedMockQuestion(BaseModel):
@@ -40,14 +43,38 @@ class GeneratedMockQuestion(BaseModel):
 class GeneratedMockQuestionSet(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    questions: list[GeneratedMockQuestion] = Field(min_length=6, max_length=6)
+    # Keep six-question banks readable for existing saved data; new banks contain ten.
+    questions: list[GeneratedMockQuestion] = Field(min_length=6, max_length=10)
 
     @model_validator(mode="after")
     def validate_unique_questions(self):
+        if len(self.questions) not in (6, 10):
+            raise ValueError("A saved question bank must contain six legacy or ten current questions.")
         prompts = [" ".join(unicodedata.normalize("NFKC", q.prompt).casefold().split()) for q in self.questions]
-        if len(set(prompts)) != 6:
-            raise ValueError("The question set must contain six distinct questions.")
+        if len(set(prompts)) != len(self.questions):
+            raise ValueError("The question set must contain distinct questions.")
         return self
+
+
+class GeneratedMockCandidateSet(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # Extra candidates let the verifier discard weak questions and still leave ten.
+    questions: list[GeneratedMockQuestion] = Field(min_length=10, max_length=12)
+
+
+class MockAnswerVerdict(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    question_number: StrictInt = Field(ge=1, le=12)
+    correct_index: StrictInt = Field(ge=0, le=3)
+    unambiguous: bool
+
+
+class MockAnswerVerification(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    verdicts: list[MockAnswerVerdict] = Field(min_length=1, max_length=12)
 
 
 class PublicMockQuestion(BaseModel):
@@ -58,6 +85,7 @@ class PublicMockQuestion(BaseModel):
 
 class MockQuestionBankResponse(BaseModel):
     status: Literal["missing", "pending", "ready", "failed", "budget_blocked", "uncertain"]
+    attemptId: str | None = None
     questions: list[PublicMockQuestion] = Field(default_factory=list)
 
 
@@ -72,9 +100,21 @@ class ReviewedMockQuestion(BaseModel):
 
 
 class MockTestResult(BaseModel):
+    attemptId: str
+    courseId: str
+    courseTitle: str
+    topicId: str
+    topicTitle: str
+    moduleTitle: str
+    syllabusVersion: int
+    completedAt: str | None
     total: int
     correct: int
     incorrect: int
     unanswered: int
     percentage: int
     questions: list[ReviewedMockQuestion]
+
+
+class MockTestAttemptsResponse(BaseModel):
+    attempts: list[MockTestResult]

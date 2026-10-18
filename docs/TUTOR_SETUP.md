@@ -56,9 +56,19 @@ rejects confirmation without it, including for older conversations that only
 have a taught marker. Repeated Start requests do not generate another reply
 while the current concept is waiting for an answer. Asking for another
 explanation does not count as answering the question.
-The tutor shows the latest exchange by default. Earlier saved explanations
-remain available under the collapsed Earlier conversation section; they are
-not replayed as a new lesson or deleted.
+Progression controls remain visible above the collapsed Lesson controls menu.
+Earlier concepts use **I understand · Continue**; the final concept uses
+**Mark as complete**, which queues topic notes through the existing completion
+transaction. The button stays visible but disabled until the learner has
+responded and the saved state permits confirmation. Module confirmation and
+Next lesson also appear outside the collapsed menu.
+The tutor shows messages together in one scrollable conversation, without a
+collapsed Earlier conversation section. Scrolling to the top loads older saved
+messages; **Load older messages** is also available. Reading older messages
+does not pull the scroll position back to the bottom when a new reply arrives.
+History is authenticated and scoped to the selected course, topic, and current
+progress epoch. Restarting a course starts a new visible conversation but does
+not delete the earlier epoch's backend history.
 A topic completes after its last concept is confirmed; a module
 completes only after all topics complete and the learner confirms the module.
 This remains self-reported understanding, not independently assessed mastery.
@@ -70,7 +80,7 @@ Firestore paths:
 ```text
 users/{uid}/courses/{courseId}/tutor/state
 users/{uid}/courses/{courseId}/tutorTopics/{topicId}
-users/{uid}/courses/{courseId}/tutorHistory/{operationId}-{role}
+users/{uid}/courses/{courseId}/tutorHistory/{operationId}-{turnIndex}-{role}
 users/{uid}/courses/{courseId}/notes/{topicId}-v{syllabusVersion}
 ```
 
@@ -78,13 +88,35 @@ State stores the current topic, paused flag, syllabus version, topic status,
 confirmed modules, revision, recent operation IDs, and an in-flight claim.
 Each topic document stores its concept position and up to 20 recent messages;
 the `tutorHistory` collection retains chat turns and voice transcripts for the
-course. Recent relevant course history and progress are supplied to future
+course without the 20-message limit. New assistant history entries include
+the full validated structured reply and visuals, not only a shortened summary.
+Older text-only history entries remain readable; their original visuals cannot
+be reconstructed once they have left the working context.
+The authenticated `/api/tutor/history` endpoint scans at most 51 course history
+records per page, returns up to 50 messages and a cursor, and does not require
+a composite Firestore index. UI history is separate from the bounded AI context.
+Recent relevant course history and progress are supplied to future
 tutor sessions. Reply sizes are bounded. These paths do not change the saved
 syllabus schema.
 Transactions protect progress, stale actions and duplicate submissions; Gemini
 calls run outside transactions and are never automatically retried.
 After a disconnected request, reload state. An abandoned request claim expires
 after three minutes; a slow or stale response cannot overwrite a newer claim.
+While chat is waiting, **Stop response** aborts the browser request and calls
+authenticated `/api/tutor/cancel` with that operation's ID. A transaction clears
+only the matching pending claim and remembers stopped operations, including a
+stop arriving before preparation. A late provider reply cannot save over a
+cancelled request or a new chat. The user's submitted message remains saved.
+**Continue chat** sends a new explicit request without resetting course progress.
+Stopping does not guarantee cancellation of a Gemini call already in progress
+or eliminate its provider cost. If stopping cannot be confirmed, a recovery
+notice keeps the lesson blocked until saved state can be checked or Stop retried.
+Connection and tutor failures appear as calm, non-red recovery notices with
+friendly messages rather than provider errors. **Check saved lesson** reloads
+persisted progress without replaying an AI request; learners can then retry
+their last step. Voice notices retain microphone and connection guidance and
+offer retry or chat as the next action. A failed request does not also display
+the ordinary request-in-progress message.
 
 When the learner confirms the final taught concept in a topic, the same
 transaction that marks the topic complete creates one queued Notes record.

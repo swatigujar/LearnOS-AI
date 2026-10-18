@@ -27,10 +27,11 @@ from app.services.ai_usage import UsageLimitError, run_tracked_provider_call
 
 
 class AIProviderError(Exception):
-    def __init__(self, provider: str, message: str, status_code: int | None = None):
+    def __init__(self, provider: str, message: str, status_code: int | None = None, source: str = "provider"):
         super().__init__(message)
         self.provider = provider
         self.status_code = status_code
+        self.source = source
 
 
 @dataclass
@@ -110,7 +111,7 @@ class GeminiProvider:
                 fixed_cost_usd=fixed_cost_usd,
             )
         except UsageLimitError as exc:
-            raise AIProviderError(self.name, str(exc), exc.status_code) from exc
+            raise AIProviderError(self.name, str(exc), exc.status_code, source=exc.source) from exc
 
     def generate_structured(self, prompt: str, schema: dict, *, feature: str = "syllabus_generation",
                             request_id: str | None = None, max_output_tokens: int | None = None) -> ProviderResult:

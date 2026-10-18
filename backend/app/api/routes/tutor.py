@@ -11,7 +11,9 @@ from app.api.schemas.notes import GeneratedNotes
 from app.api.schemas.syllabus import GeneratedSyllabus
 from app.api.schemas.tutor import (
     TutorAction,
+    TutorCancelRequest,
     TutorConversation,
+    TutorHistoryResponse,
     TutorLiveSessionRequest,
     TutorLiveTranscriptRequest,
     TutorMessage,
@@ -311,6 +313,7 @@ def _response(context):
         learner_name=name, active_topic_id=state["active_topic_id"], syllabus_version=state["syllabus_version"],
         progress_epoch=state.get("progress_epoch", 0),
         revision=state["revision"], paused=state["paused"], busy=_busy(state), topic_status=statuses,
+        pending_operation_id=state["pending"]["id"] if _busy(state) else None,
         module_status=modules, conversation=conversation,
         can_confirm=bool(conversation.concepts and conversation.taught_index == conversation.concept_index
                          and conversation.answered_index == conversation.concept_index
@@ -348,17 +351,17 @@ def _prepare(transaction, context, request):
                 user_text = request.message.strip()
                 assistant_text = f"Sure, let's switch to {target_topic.title}. We can continue this lesson whenever you like."
                 conversation["messages"] = [*conversation["messages"],
-                    {"role": "user", "text": user_text, "reply": None, "channel": "chat"}][-20:]
+                    {"id": f"{request.operationId}-0-user", "role": "user", "text": user_text, "reply": None, "channel": "chat"}][-20:]
                 target_conversation["messages"] = [*target_conversation["messages"],
-                    {"role": "assistant", "text": assistant_text, "reply": None, "channel": "chat"}][-20:]
+                    {"id": f"{request.operationId}-1-assistant", "role": "assistant", "text": assistant_text, "reply": None, "channel": "chat"}][-20:]
                 transaction.create(course_ref.collection("tutorHistory").document(
-                    f"{request.operationId}-user"
+                    f"{request.operationId}-0-user"
                 ), {
                     "topicId": request.topicId, "role": "user", "channel": "chat", "text": user_text,
                     "progressEpoch": state.get("progress_epoch", 0), "createdAt": firestore.SERVER_TIMESTAMP,
                 })
                 transaction.create(course_ref.collection("tutorHistory").document(
-                    f"{request.operationId}-assistant"
+                    f"{request.operationId}-1-assistant"
                 ), {
                     "topicId": target_id, "role": "assistant", "channel": "chat", "text": assistant_text,
                     "progressEpoch": state.get("progress_epoch", 0), "createdAt": firestore.SERVER_TIMESTAMP,
@@ -429,9 +432,9 @@ def _prepare(transaction, context, request):
                 conversation["answered_index"] = conversation["concept_index"]
             if request.action == "message":
                 conversation["messages"] = [*conversation["messages"],
-                    {"role": "user", "text": request.message.strip(), "reply": None}][-20:]
+                    {"id": f"{request.operationId}-0-user", "role": "user", "text": request.message.strip(), "reply": None}][-20:]
                 transaction.create(course_ref.collection("tutorHistory").document(
-                    f"{request.operationId}-user"
+                    f"{request.operationId}-0-user"
                 ), {
                     "topicId": request.topicId,
                     "role": "user",
@@ -479,25 +482,27 @@ def _finish(transaction, context, request, reply):
             )
         if request.action == "explain":
             explain_text = "Please explain again differently."
-            conversation["messages"].append({"role": "user", "text": explain_text, "reply": None})
+            conversation["messages"].append({"id": f"{request.operationId}-0-user", "role": "user", "text": explain_text, "reply": None})
             transaction.create(course_ref.collection("tutorHistory").document(
-                f"{request.operationId}-user"
+                f"{request.operationId}-0-user"
             ), {
                 "topicId": request.topicId,
                 "role": "user",
                 "channel": "chat",
                 "text": explain_text,
+                "progressEpoch": state.get("progress_epoch", 0),
                 "createdAt": firestore.SERVER_TIMESTAMP,
             })
-        conversation["messages"].append({"role": "assistant", "text": "", "reply": reply.model_dump()})
+        conversation["messages"].append({"id": f"{request.operationId}-1-assistant", "role": "assistant", "text": "", "reply": reply.model_dump()})
         conversation["messages"] = conversation["messages"][-20:]
         transaction.create(course_ref.collection("tutorHistory").document(
-            f"{request.operationId}-assistant"
+            f"{request.operationId}-1-assistant"
         ), {
             "topicId": request.topicId,
             "role": "assistant",
             "channel": "chat",
             "text": _reply_history_text(reply),
+            "reply": reply.model_dump(),
             "progressEpoch": state.get("progress_epoch", 0),
             "createdAt": firestore.SERVER_TIMESTAMP,
         })
@@ -518,6 +523,77 @@ def get_tutor_state(courseId: str = Query(min_length=1, max_length=150, pattern=
     except Exception as exc:
         logger.exception("Tutor state could not be loaded.")
         raise HTTPException(503, "I couldn't load your saved lesson just now. Your progress is safe; please refresh and try again.") from exc
+
+
+@router.get("/history", response_model=TutorHistoryResponse)
+def get_tutor_history(
+    courseId: str = Query(min_length=1, max_length=150, pattern=r"^[^/]+$"),
+    topicId: str = Query(pattern=r"^module-\d+-topic-\d+$"),
+    before: str | None = Query(default=None, min_length=1, max_length=150, pattern=r"^[a-zA-Z0-9-]+$"),
+    user: dict = Depends(get_current_user),
+):
+    try:
+        _, course_ref, _, course, syllabus, _ = _context(courseId, user)
+        state = _state(course_ref.collection("tutor").document("state"), course, syllabus)
+        ensure_topic_available(syllabus, state, topicId)
+        history = course_ref.collection("tutorHistory")
+        query = history.order_by("createdAt", direction=firestore.Query.DESCENDING)
+        if before:
+            cursor = history.document(before).get()
+            if not cursor.exists:
+                raise HTTPException(409, "The saved conversation changed. Reload it to continue.")
+            query = query.start_after(cursor)
+        # Scan a bounded course-history page to avoid requiring a composite index.
+        snapshots = list(query.limit(51).stream())
+        messages = []
+        for snapshot in reversed(snapshots[:50]):
+            item = snapshot.to_dict() or {}
+            if item.get("topicId") != topicId or item.get("progressEpoch", 0) != state.get("progress_epoch", 0):
+                continue
+            messages.append(TutorMessage(
+                id=snapshot.id, role=item["role"], channel=item.get("channel", "chat"),
+                text="" if item.get("reply") else item["text"], reply=item.get("reply"),
+            ))
+        return TutorHistoryResponse(
+            messages=messages, next_cursor=snapshots[49].id if len(snapshots) > 50 else None,
+        )
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        logger.warning("Tutor history could not be validated.")
+        raise HTTPException(409, "Your saved conversation needs review. Please reload your lesson.") from exc
+    except Exception as exc:
+        logger.exception("Tutor history could not be loaded.")
+        raise HTTPException(503, "We couldn't load older messages just now. Please try again in a moment.") from exc
+
+
+@firestore.transactional
+def _cancel(transaction, context, request):
+    _, course_ref, legacy_ref, course, syllabus, _ = context
+    state_ref = course_ref.collection("tutor").document("state")
+    _check_course(transaction, course_ref, legacy_ref, course["syllabusVersion"])
+    state = _state(state_ref, course, syllabus, transaction)
+    if request.operationId in state["operations"]:
+        return
+    if (state.get("pending") or {}).get("id") == request.operationId:
+        state["pending"] = None
+    # Also remember a stop that arrives before the original action is prepared.
+    state["operations"] = [*state["operations"], request.operationId][-100:]
+    state["revision"] += 1
+    transaction.set(state_ref, state)
+
+
+@router.post("/cancel", response_model=TutorStateResponse)
+def cancel_tutor_response(request: TutorCancelRequest, user: dict = Depends(get_current_user)):
+    try:
+        context = _context(request.courseId, user)
+        _cancel(context[0].transaction(), context, request)
+        return _response(context)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Tutor response could not be stopped.")
+        raise HTTPException(503, "We couldn't confirm the stop yet. Check your saved lesson before continuing.") from exc
 
 
 @router.post("/action", response_model=TutorStateResponse)
@@ -589,7 +665,8 @@ def _save_live_transcript(transaction, context, request):
     has_learner_turn = False
     has_assistant_turn = False
     for index, turn in enumerate(request.turns):
-        saved_message = TutorMessage(role=turn.role, text=turn.text, reply=None, channel="voice")
+        saved_message = TutorMessage(id=f"{request.operationId}-{index}-{turn.role}",
+                                     role=turn.role, text=turn.text, reply=None, channel="voice")
         conversation["messages"].append(saved_message.model_dump())
         transaction.create(course_ref.collection("tutorHistory").document(
             f"{request.operationId}-{index}-{turn.role}"

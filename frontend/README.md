@@ -149,6 +149,34 @@ Unit tests use mocked AI and Firebase behavior. Live Gemini calls, deployed Fire
 
 ## Product and Feature Documentation
 
+### Dynamic mock tests
+
+The course Mock Test page generates ten MCQs for any selected saved syllabus
+topic on every explicit **Start new test** or **Generate new test** action.
+Static frontend demo questions are no longer used. Each test has a UUID attempt
+ID, so checking preparation status or retrying a submission refers to the same
+test rather than silently generating another one. Opening the page, changing
+topics, and refreshing result history do not make AI generation requests.
+
+The backend validates the generated question set and independently checks its
+answer keys before making questions available. Answer keys and explanations
+are not sent to the browser until submission. Generation failures show a
+friendly recovery message, never a fixed fallback question set.
+
+Submission is graded against the exact saved attempt on the backend and only
+reports success after the result is saved. Results include the topic, module,
+syllabus version, completion time, selected answers, correct answers,
+explanations, marks, incorrect/unanswered counts, and percentage. Repeat
+submissions cannot create duplicate attempts or revise a completed score.
+The Mock Test page shows saved attempts, answer reviews, and topic-wise total,
+average, latest and best marks from the loaded recent history. These are
+assessment evidence for future progress tracking, not automatic lesson
+completion or a claim of mastery.
+
+Deploy the frontend and backend together. Tests mock Gemini and Firestore;
+question correctness on a live provider is not guaranteed by schema validation
+or AI review alone and should be spot-checked for the target curriculum.
+
 - [Master Product Specification](../docs/MASTER_SPEC.md)
 - [Syllabus setup and data flow](../docs/SYLLABUS_SETUP.md)
 - [AI tutor behavior and persistence](../docs/TUTOR_SETUP.md)

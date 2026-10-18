@@ -16,8 +16,16 @@ async function forward(request: Request, method: "GET" | "POST") {
     }
   }
   const backend = (process.env.BACKEND_API_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
-  const courseId = new URL(request.url).searchParams.get("courseId") ?? "";
-  const path = method === "GET" ? `/state?courseId=${encodeURIComponent(courseId)}` : "/action";
+  const params = new URL(request.url).searchParams;
+  const courseId = params.get("courseId") ?? "";
+  const history = method === "GET" && params.get("view") === "history";
+  const query = new URLSearchParams({ courseId });
+  if (history) {
+    query.set("topicId", params.get("topicId") ?? "");
+    if (params.has("before")) query.set("before", params.get("before") ?? "");
+  }
+  const path = method === "GET" ? `/${history ? "history" : "state"}?${query}` :
+    params.get("action") === "cancel" ? "/cancel" : "/action";
   try {
     const response = await backendFetch(`${backend}/api/tutor${path}`, {
       method,
