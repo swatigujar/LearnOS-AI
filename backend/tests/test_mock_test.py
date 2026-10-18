@@ -1,4 +1,4 @@
-import json
+﻿import json
 import unittest
 from unittest.mock import Mock, patch
 
@@ -10,20 +10,27 @@ from app.api.schemas.mock_test import GeneratedMockQuestionSet
 from app.main import app
 from app.services.ai_provider import AIProviderError, GeminiProvider
 from app.services.ai_usage import UsageLimitError
-from app.services.mock_test import _claim_generation, _finish_generation
+from app.services import mock_test as mock_service
 from tests.test_syllabus import FakeFirestore, make_syllabus
 
 
-def make_question_set():
+def make_question_set(count=10, tag=""):
     return {
         "questions": [
-            {"prompt": f"Which statement best describes concept {index} in this topic?",
+            {"prompt": f"Which statement best describes concept {index}{tag} in this topic?",
              "options": [f"Correct concept {index}", f"Distractor A {index}", f"Distractor B {index}", f"Distractor C {index}"],
              "answer_index": 0,
              "explanation": f"Concept {index} follows the saved topic description."}
-            for index in range(1, 11)
+            for index in range(1, count + 1)
         ]
     }
+
+
+def make_verification(count=12, wrong=(), ambiguous=()):
+    return {"verdicts": [
+        {"question_number": number, "correct_index": 1 if number in wrong else 0, "unambiguous": number not in ambiguous}
+        for number in range(1, count + 1)
+    ]}
 
 
 class MockTestSchemaTests(unittest.TestCase):
@@ -62,114 +69,146 @@ class MockTestSchemaTests(unittest.TestCase):
             GeneratedMockQuestionSet.model_validate(invalid_answer)
 
 
+
+ATTEMPT_1 = "00000000-0000-4000-8000-000000000001"
+ATTEMPT_2 = "00000000-0000-4000-8000-000000000002"
+
+
 class MockTestEndpointTests(unittest.TestCase):
     def setUp(self):
         self.database = FakeFirestore()
-        self.database.docs[self.database.course_path].update(syllabusStatus="ready", syllabusVersion=1)
+        self.database.docs[self.database.course_path].update(syllabusStatus="ready", syllabusVersion=1, course_name="Applied Algebra")
         self.database.docs[self.database.course_path + "/syllabus/v1"] = make_syllabus().model_dump(mode="json")
         app.dependency_overrides[get_current_user] = lambda: {"uid": "authenticated-user"}
-        self.firestore = patch("app.services.mock_test.get_firestore_client", return_value=self.database)
-        self.firestore.start()
-        self.addCleanup(self.firestore.stop)
+        patches = [
+            patch("app.services.mock_test.get_firestore_client", return_value=self.database),
+            patch("app.services.mock_test._recent_attempt_docs", side_effect=self.recent_attempts),
+        ]
         self.provider = Mock()
-        self.provider.generate_structured.return_value = Mock(text=json.dumps(make_question_set()))
-        self.provider_patch = patch("app.services.mock_test.get_ai_provider", return_value=self.provider)
-        self.provider_patch.start()
-        self.addCleanup(self.provider_patch.stop)
+        self.queue_generation()
+        patches.append(patch("app.services.mock_test.get_ai_provider", return_value=self.provider))
+        for item in patches:
+            item.start()
+            self.addCleanup(item.stop)
         self.client = TestClient(app)
         self.addCleanup(self.client.close)
         self.addCleanup(app.dependency_overrides.clear)
 
-    def bank_path(self, topic_id="module-1-topic-1"):
-        return f"{self.database.course_path}/mockQuestionBanks/v1_{topic_id}"
+    def queue_generation(self, *rounds):
+        rounds = rounds or ((make_question_set(12), make_verification()),)
+        effects = []
+        for questions, verification in rounds:
+            effects.append(Mock(text=json.dumps(questions)))
+            effects.append(Mock(text=json.dumps(verification)))
+        self.provider.generate_structured.side_effect = effects
 
-    def start(self, topic_id="module-1-topic-1", attempt_id="00000000-0000-4000-8000-000000000001"):
+    def recent_attempts(self, course_ref, limit):
+        prefix = f"{course_ref.path}/mockTestAttempts/"
+        docs = [value for key, value in self.database.docs.items() if key.startswith(prefix)]
+        return sorted(docs, key=lambda item: item.get("completedAt") or "", reverse=True)[:limit]
+
+    def bank_path(self, attempt_id=ATTEMPT_1):
+        return f"{self.database.course_path}/mockQuestionBanks/attempt_{attempt_id}"
+
+    def result_path(self, attempt_id=ATTEMPT_1):
+        return f"{self.database.course_path}/mockTestAttempts/{attempt_id}"
+
+    def start(self, attempt_id=ATTEMPT_1, topic_id="module-1-topic-1"):
         return self.client.post("/api/mock-test/start", json={
             "courseId": "course-123", "topicId": topic_id, "syllabusVersion": 1, "attemptId": attempt_id,
         })
 
-    def test_unseen_topic_generates_once_then_reuses_saved_bank(self):
-        syllabus = make_syllabus().model_dump(mode="json")
-        topic = dict(syllabus["modules"][0]["topics"][0], topic_id="module-1-topic-2", title="A newly saved topic")
-        syllabus["modules"][0]["topics"][0]["estimated_minutes"] /= 2
-        topic["estimated_minutes"] /= 2
-        syllabus["modules"][0]["topics"].append(topic)
-        self.database.docs[self.database.course_path + "/syllabus/v1"] = syllabus
-        self.database.docs[self.database.course_path]["course_name"] = "Applied Algebra"
+    def submit(self, answers, attempt_id=ATTEMPT_1):
+        return self.client.post("/api/mock-test/submit", json={
+            "courseId": "course-123", "topicId": "module-1-topic-1", "syllabusVersion": 1,
+            "attemptId": attempt_id, "answers": answers,
+        })
 
-        response = self.start("module-1-topic-2")
+    def test_each_attempt_generates_a_fresh_verified_bank_without_leaking_answers(self):
+        response = self.start()
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["status"], "ready")
-        self.assertEqual(len(response.json()["questions"]), 10)
+        body = response.json()
+        self.assertEqual((body["status"], body["attemptId"], len(body["questions"])), ("ready", ATTEMPT_1, 10))
         self.assertNotIn("answer_index", response.text)
-        self.provider.generate_structured.assert_called_once()
-        kwargs = self.provider.generate_structured.call_args.kwargs
-        self.assertEqual(kwargs["feature"], "mock_test")
-        self.assertEqual(kwargs["max_output_tokens"], 3000)
-        self.assertIn("exactly ten", self.provider.generate_structured.call_args.args[0])
-        self.assertTrue(kwargs["request_id"])
-        self.assertIn("A newly saved topic", self.provider.generate_structured.call_args.args[0])
-        self.assertIn("Applied Algebra", self.provider.generate_structured.call_args.args[0])
-        saved = self.database.docs[self.bank_path("module-1-topic-2")]
-        self.assertEqual(saved["status"], "ready")
-        self.assertEqual(len(saved["questions"]), 10)
-        self.assertEqual(self.start("module-1-topic-2").json()["status"], "ready")
-        self.provider.generate_structured.assert_called_once()
+        self.assertNotIn("explanation", response.text)
+        generate, verify = self.provider.generate_structured.call_args_list
+        self.assertIn("exactly twelve", generate.args[0])
+        self.assertIn("Applied Algebra", generate.args[0])
+        self.assertEqual(generate.kwargs["request_id"], ATTEMPT_1)
+        self.assertEqual(verify.kwargs["request_id"], f"{ATTEMPT_1}:verify")
+        self.assertNotIn("answer_index", verify.args[0])
+        self.assertEqual(len(self.database.docs[self.bank_path()]["questions"]), 10)
 
-    def test_saved_syllabus_generation_metadata_is_ignored_during_validation(self):
-        # Normal generation persists these operational fields beside the schema.
-        self.database.docs[self.database.course_path + "/syllabus/v1"].update({
-            "generatedAt": "mock-server-timestamp",
-            "provider": "gemini",
-            "model": "configured-model",
-            "syllabusVersion": 1,
-        })
-        response = self.client.get("/api/mock-test/bank", params={
-            "courseId": "course-123", "topicId": "module-1-topic-1", "syllabusVersion": 1,
-        })
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["status"], "missing")
-        self.provider.generate_structured.assert_not_called()
+        self.assertEqual(self.start().json()["status"], "ready")
+        self.assertEqual(self.provider.generate_structured.call_count, 2)
 
-    def test_existing_saved_bank_reuse_and_submit_reveal_answers_without_generation(self):
-        self.database.docs[self.bank_path()] = {
-            "status": "ready", "syllabus_version": 1, "topic_id": "module-1-topic-1",
-            "questions": make_question_set()["questions"],
-        }
-        public = self.client.get("/api/mock-test/bank", params={
-            "courseId": "course-123", "topicId": "module-1-topic-1", "syllabusVersion": 1,
-        })
-        self.assertEqual(public.status_code, 200)
-        self.assertEqual(public.json()["status"], "ready")
-        self.assertNotIn("answer_index", public.text)
-        self.assertNotIn("explanation", public.text)
+        self.queue_generation((make_question_set(12, tag=" second"), make_verification()))
+        second = self.start(ATTEMPT_2)
+        self.assertEqual(second.json()["status"], "ready")
+        self.assertIn("second", second.json()["questions"][0]["prompt"])
 
-        reused = self.start()
-        self.assertEqual(reused.json()["status"], "ready")
-        self.assertNotIn("answer_index", reused.text)
-        submitted = self.client.post("/api/mock-test/submit", json={
-            "courseId": "course-123", "topicId": "module-1-topic-1", "syllabusVersion": 1,
-            "answers": {f"q{index}": 0 for index in range(1, 11)},
-        })
-        self.assertEqual(submitted.status_code, 200)
-        self.assertEqual((submitted.json()["total"], submitted.json()["correct"], submitted.json()["percentage"]), (10, 10, 100))
-        self.assertEqual(submitted.json()["questions"][0]["explanation"], "Concept 1 follows the saved topic description.")
-        self.provider.generate_structured.assert_not_called()
+    def test_verifier_disagreements_are_dropped_and_too_few_fail(self):
+        self.queue_generation((make_question_set(12), make_verification(wrong=(1,), ambiguous=(2,))))
+        response = self.start()
+        self.assertEqual(response.json()["status"], "ready")
+        prompts = [item["prompt"] for item in response.json()["questions"]]
+        self.assertFalse(any("concept 1 " in prompt or "concept 2 " in prompt for prompt in prompts))
 
-    def test_legacy_six_question_bank_submits_with_dynamic_result_counts(self):
-        questions = make_question_set()["questions"][:6]
-        self.database.docs[self.bank_path()] = {
-            "status": "ready", "syllabus_version": 1, "topic_id": "module-1-topic-1",
-            "questions": questions,
-        }
-        submitted = self.client.post("/api/mock-test/submit", json={
-            "courseId": "course-123", "topicId": "module-1-topic-1", "syllabusVersion": 1,
-            "answers": {"q1": 0, "q2": 1},
-        })
+        self.queue_generation((make_question_set(12), make_verification(wrong=(1, 2, 3))))
+        failed = self.start(ATTEMPT_2)
+        self.assertEqual(failed.json()["status"], "failed")
+        self.assertNotEqual(self.database.docs[self.bank_path(ATTEMPT_2)]["status"], "ready")
+
+    def test_submit_grades_on_server_persists_once_and_lists_history(self):
+        self.start()
+        submitted = self.submit({"q1": 0, "q2": 1})
         self.assertEqual(submitted.status_code, 200)
         result = submitted.json()
-        self.assertEqual((result["total"], result["correct"], result["incorrect"], result["unanswered"]), (6, 1, 1, 4))
+        self.assertEqual((result["total"], result["correct"], result["incorrect"], result["unanswered"], result["percentage"]), (10, 1, 1, 8, 10))
+        self.assertEqual((result["attemptId"], result["courseTitle"], result["topicId"]), (ATTEMPT_1, "Applied Algebra", "module-1-topic-1"))
+        self.assertTrue(result["topicTitle"] and result["moduleTitle"] and result["completedAt"])
+        self.assertEqual(result["questions"][1]["correctIndex"], 0)
+        saved = self.database.docs[self.result_path()]
+        self.assertEqual((saved["userId"], saved["correct"]), ("authenticated-user", 1))
+
+        again = self.submit({f"q{index}": 0 for index in range(1, 11)})
+        self.assertEqual(again.json()["correct"], 1)
+        self.assertEqual(again.json()["completedAt"], result["completedAt"])
+
+        history = self.client.get("/api/mock-test/attempts", params={"courseId": "course-123"})
+        self.assertEqual(history.status_code, 200)
+        self.assertEqual([item["attemptId"] for item in history.json()["attempts"]], [ATTEMPT_1])
+        self.assertEqual(self.provider.generate_structured.call_count, 2)
+
+    def test_next_generation_asks_to_avoid_previous_questions(self):
+        self.start()
+        self.submit({"q1": 0})
+        self.queue_generation((make_question_set(12, tag=" new"), make_verification()))
+        self.start(ATTEMPT_2)
+        prompt = self.provider.generate_structured.call_args_list[-2].args[0]
+        self.assertIn("Do not repeat", prompt)
+        self.assertIn("concept 1 in this topic", prompt)
+
+    def test_submit_rejects_missing_bank_wrong_ids_and_missing_attempt(self):
+        self.assertEqual(self.submit({"q1": 0}).status_code, 409)
+        self.start()
+        self.assertEqual(self.submit({"q11": 0}).status_code, 422)
+        self.assertEqual(self.submit({"q1": 4}).status_code, 422)
+        missing = self.client.post("/api/mock-test/submit", json={
+            "courseId": "course-123", "topicId": "module-1-topic-1", "syllabusVersion": 1, "answers": {},
+        })
+        self.assertEqual(missing.status_code, 422)
+        self.assertNotIn(self.result_path(), self.database.docs)
+
+    def test_bank_reads_never_generate(self):
+        params = {"courseId": "course-123", "topicId": "module-1-topic-1", "syllabusVersion": 1}
+        self.assertEqual(self.client.get("/api/mock-test/bank", params=params).json()["status"], "missing")
+        self.assertEqual(self.client.get("/api/mock-test/bank", params={**params, "attemptId": ATTEMPT_1}).json()["status"], "missing")
         self.provider.generate_structured.assert_not_called()
+        self.start()
+        ready = self.client.get("/api/mock-test/bank", params={**params, "attemptId": ATTEMPT_1})
+        self.assertEqual((ready.json()["status"], len(ready.json()["questions"])), ("ready", 10))
+        self.assertNotIn("answer_index", ready.text)
 
     def test_usage_budget_rejection_is_persisted_and_does_not_call_gemini(self):
         provider = GeminiProvider()
@@ -178,90 +217,40 @@ class MockTestEndpointTests(unittest.TestCase):
             side_effect=UsageLimitError("The configured daily Gemini request limit has been reached."),
         ) as guarded_call, patch.object(GeminiProvider, "_client") as client:
             response = self.start()
-        self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "budget_blocked")
         self.assertEqual(self.database.docs[self.bank_path()]["status"], "budget_blocked")
         guarded_call.assert_called_once()
         client.assert_not_called()
-        self.assertEqual(response.json()["questions"], [])
 
-    def test_failed_generation_is_terminal_and_never_retried(self):
+    def test_failed_generation_is_terminal_for_that_attempt(self):
         self.provider.generate_structured.side_effect = [
             AIProviderError("gemini", "provider unavailable", 503),
-            Mock(text=json.dumps(make_question_set())),
+            Mock(text=json.dumps(make_question_set(12))), Mock(text=json.dumps(make_verification())),
         ]
-        first = self.start()
-        same_attempt = self.start()
-        self.assertEqual(first.json()["status"], "failed")
-        self.assertEqual(same_attempt.json()["status"], "failed")
+        self.assertEqual(self.start().json()["status"], "failed")
+        self.assertEqual(self.start().json()["status"], "failed")
         self.provider.generate_structured.assert_called_once()
+        self.assertEqual(self.start(ATTEMPT_2).json()["status"], "ready")
 
-        explicit_retry = self.start(attempt_id="00000000-0000-4000-8000-000000000002")
-        self.assertEqual(explicit_retry.json()["status"], "ready")
-        self.assertEqual(self.provider.generate_structured.call_count, 2)
-
-    def test_invalid_generated_json_is_not_persisted_as_a_ready_bank(self):
-        self.provider.generate_structured.return_value = Mock(text='{"questions": []}')
-        response = self.start()
-        self.assertEqual(response.json()["status"], "failed")
-        self.assertNotEqual(self.database.docs[self.bank_path()]["status"], "ready")
-        self.provider.generate_structured.assert_called_once()
-
-    def test_generated_bank_with_legacy_count_is_not_saved_as_new_ready_bank(self):
-        self.provider.generate_structured.return_value = Mock(text=json.dumps({
-            "questions": make_question_set()["questions"][:6],
-        }))
-        response = self.start()
-        self.assertEqual(response.json()["status"], "failed")
-        self.assertEqual(response.json()["questions"], [])
-        self.assertNotEqual(self.database.docs[self.bank_path()]["status"], "ready")
-
-    def test_stale_attempt_cannot_overwrite_a_new_explicit_attempt(self):
+    def test_late_generation_cannot_overwrite_a_finished_bank(self):
         bank_ref = self.database.document(self.bank_path())
-        self.database.docs[self.bank_path()] = {
-            "status": "uncertain", "attempt_id": "00000000-0000-4000-8000-000000000001",
-            "syllabus_version": 1, "topic_id": "module-1-topic-1", "questions": [],
-        }
-        _, claimed = _claim_generation(
-            self.database.transaction(), bank_ref,
-            "00000000-0000-4000-8000-000000000002", 1, "module-1-topic-1",
-        )
+        _, claimed = mock_service._claim_generation(self.database.transaction(), bank_ref, ATTEMPT_1, 1, "module-1-topic-1")
         self.assertTrue(claimed)
-        saved = _finish_generation(self.database.transaction(), bank_ref,
-                                   "00000000-0000-4000-8000-000000000001", {"status": "ready", "questions": []})
-        self.assertFalse(saved)
-        self.assertEqual(self.database.docs[self.bank_path()]["attempt_id"], "00000000-0000-4000-8000-000000000002")
-        self.assertEqual(self.database.docs[self.bank_path()]["status"], "generating")
+        _, claimed_again = mock_service._claim_generation(self.database.transaction(), bank_ref, ATTEMPT_1, 1, "module-1-topic-1")
+        self.assertFalse(claimed_again)
+        self.assertTrue(mock_service._finish_generation(self.database.transaction(), bank_ref, ATTEMPT_1, {"status": "failed"}))
+        self.assertFalse(mock_service._finish_generation(self.database.transaction(), bank_ref, ATTEMPT_1, {"status": "ready"}))
 
-    def test_mock_test_reads_and_submission_do_not_call_provider(self):
-        self.database.docs[self.bank_path()] = {
-            "status": "ready", "syllabus_version": 1, "topic_id": "module-1-topic-1",
-            "questions": make_question_set()["questions"],
-        }
-        self.client.get("/api/mock-test/bank", params={
-            "courseId": "course-123", "topicId": "module-1-topic-1", "syllabusVersion": 1,
+    def test_unrelated_course_and_stale_syllabus_are_rejected_without_provider_call(self):
+        other = self.client.post("/api/mock-test/start", json={
+            "courseId": "someone-elses-course", "topicId": "module-1-topic-1", "syllabusVersion": 1, "attemptId": ATTEMPT_1,
         })
-        partial = self.client.post("/api/mock-test/submit", json={
-            "courseId": "course-123", "topicId": "module-1-topic-1", "syllabusVersion": 1, "answers": {"q1": 0},
+        self.assertEqual(other.status_code, 404)
+        self.assertEqual(self.client.get("/api/mock-test/attempts", params={"courseId": "someone-elses-course"}).status_code, 404)
+        stale = self.client.post("/api/mock-test/start", json={
+            "courseId": "course-123", "topicId": "module-1-topic-1", "syllabusVersion": 2, "attemptId": ATTEMPT_1,
         })
-        self.assertEqual(partial.status_code, 200)
-        self.assertEqual((partial.json()["total"], partial.json()["correct"], partial.json()["incorrect"], partial.json()["unanswered"]), (10, 1, 0, 9))
-        self.provider.generate_structured.assert_not_called()
-
-    def test_unrelated_course_cannot_read_or_generate_a_bank(self):
-        response = self.client.post("/api/mock-test/start", json={
-            "courseId": "someone-elses-course", "topicId": "module-1-topic-1", "syllabusVersion": 1,
-            "attemptId": "00000000-0000-4000-8000-000000000001",
-        })
-        self.assertEqual(response.status_code, 404)
-        self.provider.generate_structured.assert_not_called()
-
-    def test_stale_syllabus_version_is_rejected_without_provider_call(self):
-        response = self.client.post("/api/mock-test/start", json={
-            "courseId": "course-123", "topicId": "module-1-topic-1", "syllabusVersion": 2,
-            "attemptId": "00000000-0000-4000-8000-000000000001",
-        })
-        self.assertEqual(response.status_code, 409)
+        self.assertEqual(stale.status_code, 409)
         self.provider.generate_structured.assert_not_called()
 
 

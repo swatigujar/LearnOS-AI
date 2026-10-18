@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { ArrowDown, Check, Mic, MicOff, Pause, Play, PhoneOff, RotateCcw, Send, Sparkles } from "lucide-react";
+import { ArrowDown, Check, Mic, MicOff, Pause, Play, PhoneOff, RotateCcw, Send, Sparkles, Square } from "lucide-react";
 import { useLiveTutor } from "@/lib/tutor-live";
 import { useAuth } from "@/lib/auth-context";
 import type { TutorReply, TutorState, TutorVisual, useTutor } from "@/lib/tutor";
@@ -46,28 +46,47 @@ export function AiTutor({ courseId, controller, lesson, nextTopicId, moduleReady
   const [mode, setMode] = useState<"chat" | "voice">("chat");
   const input = useRef<HTMLTextAreaElement>(null);
   const conversationArea = useRef<HTMLDivElement>(null);
+  const nearBottom = useRef(true);
+  const scrollSnapshot = useRef<{ height: number; top: number } | null>(null);
   const live = useLiveTutor(courseId, lesson?.topic_id ?? "", state?.progress_epoch ?? 0, acceptSavedState);
   const previousTopicId = useRef(lesson?.topic_id ?? "");
-  const messages = state?.conversation.messages ?? [];
-  let currentExchangeStart = 0;
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    if (messages[index].role === "assistant") {
-      currentExchangeStart = index > 0 && messages[index - 1].role === "user" ? index - 1 : index;
-      break;
-    }
-  }
+  const messages = controller.messages;
+  const firstMessageId = messages[0]?.id;
+  const lastMessageId = messages.at(-1)?.id;
   const paused = state?.paused ?? false;
   const completed = !!lesson && state?.topic_status[lesson.topic_id] === "completed";
   const disabled = loading || busy || !state || paused;
   const liveConnected = live.status === "connected";
   const currentConcept = state?.conversation.concepts[state.conversation.concept_index];
+  const finalConcept = !!state?.conversation.concepts.length
+    && state.conversation.concept_index === state.conversation.concepts.length - 1;
   const awaitingResponse = !!currentConcept && !state?.can_confirm
     && messages.some((message) => message.reply?.concept_title === currentConcept);
 
   useEffect(() => {
     const area = conversationArea.current;
+    if (!area) return;
+    if (scrollSnapshot.current && controller.historyLoading) return;
+    if (scrollSnapshot.current) {
+      area.scrollTop = scrollSnapshot.current.top + area.scrollHeight - scrollSnapshot.current.height;
+      scrollSnapshot.current = null;
+    } else if (nearBottom.current) {
+      area.scrollTop = area.scrollHeight;
+    }
+  }, [messages.length, firstMessageId, lastMessageId, live.partialTranscript, pendingMessage, controller.historyLoading]);
+
+  useEffect(() => {
+    nearBottom.current = true;
+    scrollSnapshot.current = null;
+    const area = conversationArea.current;
     if (area) area.scrollTop = area.scrollHeight;
-  }, [state?.active_topic_id, state?.conversation.messages, live.partialTranscript]);
+  }, [state?.active_topic_id, state?.progress_epoch]);
+
+  async function loadOlder() {
+    const area = conversationArea.current;
+    if (area) scrollSnapshot.current = { height: area.scrollHeight, top: area.scrollTop };
+    await controller.loadOlderMessages();
+  }
 
   useEffect(() => {
     const topicId = lesson?.topic_id ?? "";
@@ -126,30 +145,45 @@ export function AiTutor({ courseId, controller, lesson, nextTopicId, moduleReady
         if (window.confirm("Restart this course from the beginning? Saved progress and tutor conversations will be reset.")) void act("restart");
       }} type="button"><RotateCcw aria-hidden="true" size={13} />Restart course</button>
     </div>
-    <div aria-label="Tutor conversation" aria-live="polite" aria-relevant="additions" className="max-h-[32rem] min-h-48 min-w-0 flex-1 space-y-4 overflow-x-hidden overflow-y-auto px-4 py-5 sm:px-5 lg:max-h-none lg:min-h-0" ref={conversationArea} role="log">
+    <div aria-label="Tutor conversation" aria-live="polite" aria-relevant="additions" className="max-h-[32rem] min-h-48 min-w-0 flex-1 space-y-4 overflow-x-hidden overflow-y-auto px-4 py-5 sm:px-5 lg:max-h-none lg:min-h-0" onScroll={() => {
+      const area = conversationArea.current;
+      if (!area) return;
+      nearBottom.current = area.scrollHeight - area.scrollTop - area.clientHeight < 80;
+      if (area.scrollTop < 60 && controller.hasOlderMessages && !controller.historyLoading && !controller.historyError) void loadOlder();
+    }} ref={conversationArea} role="log">
       {loading && <p className="text-sm text-[#756B80]">Loading saved conversation and progress...</p>}
+      {controller.historyLoading && <p className="text-xs text-[#756B80]" role="status">Loading saved messages...</p>}
+      {(controller.hasOlderMessages || controller.historyError) && <div className="text-xs text-[#756B80]">{controller.historyError && <p role="status">{controller.historyError}</p>}<button className="rounded-md border border-[#EEE5E0] px-3 py-2 font-semibold disabled:opacity-50" disabled={controller.historyLoading} onClick={() => void loadOlder()} type="button">{controller.historyError ? "Retry loading messages" : "Load older messages"}</button></div>}
       {!loading && messages.length === 0 && <div className="py-5"><p className="font-semibold">Hi{learnerName ? ` ${learnerName.split(/\s+/)[0]}` : ""}! {lesson ? `Ready to learn ${lesson.title} together?` : "Your tutor needs a saved syllabus."}</p><p className="mt-2 text-sm text-[#756B80]">We’ll take one small step at a time. Ask questions whenever you like.</p></div>}
-      {currentExchangeStart > 0 && <details className="rounded-md border border-[#EEE5E0] bg-[#F2ECFF] p-3" key={`${courseId}-${lesson?.topic_id}`}><summary className="cursor-pointer text-xs font-semibold text-[#756B80]">Earlier conversation ({currentExchangeStart} messages)</summary><div className="mt-3 space-y-4">{messages.slice(0, currentExchangeStart).map((message, index) => <ConversationMessage key={index} message={message} />)}</div></details>}
-      {messages.slice(currentExchangeStart).map((message, index) => <ConversationMessage key={currentExchangeStart + index} message={message} />)}
+      {messages.map((message, index) => <ConversationMessage key={message.id ?? index} message={message} />)}
       {pendingMessage && <article className="ml-auto w-fit max-w-[88%] rounded-3xl rounded-br-md bg-[#F2ECFF] px-4 py-3"><p className="mb-2 text-xs font-semibold text-[#756B80]">You · Sending</p><p className="whitespace-pre-wrap break-words text-sm">{pendingMessage}</p></article>}
       {live.partialTranscript && <article className="max-w-full rounded-md border border-[#EEE5E0] bg-white/70 p-3"><p className="mb-2 text-xs font-semibold text-[#756B80]">Live transcript</p><p className="whitespace-pre-wrap break-words text-sm leading-6 text-[#424158]">{live.partialTranscript}</p></article>}
-      {busy && <p className="text-sm text-[#756B80]" role="status">Tutor request in progress. Your saved progress is safe.</p>}
-      {error && <p className="text-sm text-red-800" role="alert">{error}</p>}
-      {live.error && <p className="text-sm text-red-800" role="alert">{live.error}</p>}
+      {busy && !error && <p className="text-sm text-[#756B80]" role="status">Your tutor is working on this step. Thanks for your patience.</p>}
+      {controller.stopped && !busy && <div className="rounded-md bg-[#F2ECFF] p-3 text-sm text-[#424158]" role="status"><p>Response stopped. Your saved chat and progress are still here. Send another message whenever you&apos;re ready.</p><button className="mt-2 rounded-md border border-[#642BD8] px-3 py-2 text-xs font-semibold text-[#642BD8] disabled:opacity-50" disabled={disabled || liveConnected} onClick={() => void perform("message", undefined, "Please continue the current concept.")} type="button">Continue chat</button></div>}
+      {error && <div className="rounded-xl border border-[#EEE5E0] bg-[#F2ECFF] p-4 text-sm text-[#424158]" role="status">
+        <p className="font-semibold text-[#4A285F]">Let&apos;s get your lesson back on track</p>
+        <p className="mt-1 leading-6">{error}</p>
+        <button className="mt-3 rounded-md border border-[#642BD8] px-3 py-2 text-xs font-semibold text-[#642BD8] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#642BD8] disabled:opacity-50" disabled={loading || busy && !state?.busy} onClick={() => void reload()} type="button">{loading ? "Checking your lesson..." : "Check saved lesson"}</button>
+        <p className="mt-2 text-xs text-[#756B80]">We&apos;ll check your saved progress first. Once it loads, you can try your last step again.</p>
+      </div>}
+      {live.error && <div className="rounded-xl border border-[#EEE5E0] bg-[#F2ECFF] p-4 text-sm text-[#424158]" role="status"><p className="font-semibold text-[#4A285F]">Let&apos;s reconnect with your tutor</p><p className="mt-1 leading-6">{live.error}</p><p className="mt-2 text-xs text-[#756B80]">You can use Retry in the voice controls or switch to chat to keep learning.</p></div>}
       {live.hasUnsaved && <div className="flex flex-wrap items-center gap-2 text-xs text-[#756B80]" role="status"><span>Some live transcript turns are still waiting to save.</span><button className="rounded-md border border-[#EEE5E0] px-2 py-1 font-semibold" onClick={() => void live.retrySave()} type="button">Retry saving transcript</button></div>}
     </div>
     <div className="shrink-0 border-t border-[#EEE5E0] bg-[#FFF8F1] px-4 py-3 sm:px-5">
       {paused && <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-md border border-[#eadfc8] bg-[#fbf8f1] p-3" role="status">
         <p className="text-sm leading-5 text-[#756B80]">This lesson is paused. Resume it from Lesson controls to continue learning.</p>
       </div>}
+      <div className="mb-2 flex flex-wrap gap-2">
+        {lesson && currentConcept && !completed && <button className="rounded-xl bg-[#642BD8] px-3.5 py-2.5 text-xs font-semibold text-white transition hover:bg-[#5322B5] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#642BD8] disabled:opacity-50" disabled={disabled || liveConnected || !state?.can_confirm} onClick={() => void act("confirm")} type="button"><Check aria-hidden="true" className="mr-1 inline" size={14} />{pendingAction === "confirm" ? "Saving…" : finalConcept ? "Mark as complete" : "I understand · Continue"}</button>}
+        {moduleReady && <button className="rounded-md border border-[#642BD8] px-3 py-2 text-xs font-semibold text-[#642BD8] disabled:opacity-50" disabled={disabled || liveConnected} onClick={() => void act("confirm_module")} type="button">Confirm module completion</button>}
+        {completed && nextTopicId && !moduleReady && <button className="rounded-md border border-[#642BD8] px-3 py-2 text-xs font-semibold text-[#642BD8] disabled:opacity-50" disabled={disabled || liveConnected} onClick={() => void act("select", nextTopicId)} type="button">Next lesson</button>}
+      </div>
+      {finalConcept && !completed && <p className="mb-2 text-xs text-[#756B80]">Mark this topic as complete to save your progress and queue its notes.</p>}
       <details className="group">
         <summary className="w-fit cursor-pointer rounded-md px-2 py-1 text-xs font-semibold text-[#756B80] hover:bg-[#F2ECFF] focus-visible:outline-2 focus-visible:outline-[#642BD8]">Lesson controls</summary>
         <div className="mt-2 flex flex-wrap gap-2">
           <button aria-label={paused ? "Resume lesson" : "Pause lesson"} className="rounded-md border border-[#EEE5E0] p-2 transition-colors hover:bg-[#F2ECFF] disabled:opacity-50" disabled={loading || busy || !state} onClick={() => void act(paused ? "resume" : "pause")} title={paused ? "Resume lesson" : "Pause lesson"} type="button">{paused ? <Play aria-hidden="true" size={15} /> : <Pause aria-hidden="true" size={15} />}</button>
-        {state?.can_confirm && <button className="rounded-xl bg-[#642BD8] px-3.5 py-2.5 text-xs font-semibold text-white transition hover:bg-[#5322B5] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#642BD8] disabled:opacity-50" disabled={disabled || liveConnected} onClick={() => void act("confirm")} type="button"><Check aria-hidden="true" className="mr-1 inline" size={14} />{pendingAction === "confirm" ? "Saving…" : "I understand · Continue"}</button>}
         {!!messages.length && <><button className="rounded-md border border-[#EEE5E0] px-3 py-2 text-xs font-semibold transition hover:bg-[#F2ECFF] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#642BD8] disabled:cursor-not-allowed disabled:opacity-50" disabled={disabled || liveConnected} onClick={() => void act("explain")} type="button">{pendingAction === "explain" ? "Preparing explanation…" : "Explain another way"}</button><button className="rounded-md border border-[#EEE5E0] px-3 py-2 text-xs font-semibold transition hover:bg-[#F2ECFF] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#642BD8]" onClick={() => input.current?.focus()} type="button">Ask a question</button><button aria-label="Repeat lesson" className="rounded-md border border-[#EEE5E0] p-2 transition hover:bg-[#F2ECFF] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#642BD8] disabled:opacity-50" disabled={disabled || liveConnected} onClick={() => void act("repeat")} title="Repeat lesson" type="button"><RotateCcw aria-hidden="true" size={14} /></button></>}
-        {moduleReady && <button className="rounded-md border border-[#642BD8] px-3 py-2 text-xs font-semibold text-[#642BD8] disabled:opacity-50" disabled={disabled || liveConnected} onClick={() => void act("confirm_module")} type="button">Confirm module completion</button>}
-        {completed && nextTopicId && !moduleReady && <button className="rounded-md border border-[#642BD8] px-3 py-2 text-xs font-semibold text-[#642BD8] disabled:opacity-50" disabled={disabled || liveConnected} onClick={() => void act("select", nextTopicId)} type="button">Next lesson</button>}
         {mode === "voice" && lesson && <button className="rounded-md border border-[#642BD8] px-3 py-2 text-xs font-semibold text-[#642BD8] disabled:opacity-50" disabled={loading || busy || paused} onClick={() => void explainVisually()} type="button">Explain visually</button>}
         {(error || state?.busy) && <button className="rounded-md border border-[#EEE5E0] px-3 py-2 text-xs font-semibold" onClick={() => void reload()} type="button">Reload saved state</button>}
         </div>
@@ -173,7 +207,7 @@ export function AiTutor({ courseId, controller, lesson, nextTopicId, moduleReady
       }} placeholder={mode === "voice" ? liveConnected ? "Type a question or speak naturally…" : "Start a live lesson to use voice" : paused ? "Resume the lesson to continue" : "Ask about this course concept…"} ref={input} rows={2} value={draft} />
       <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
         <p className="text-xs text-[#756B80]">{mode === "voice" ? "The tutor listens and responds in real time. You can interrupt, ask a doubt, or type while connected." : "The tutor uses your saved course material and waits for your response before offering the next step."}</p>
-        <button className="learnos-primary-button inline-flex items-center gap-2 px-4 py-2 text-sm disabled:opacity-50" disabled={disabled || !draft.trim() || (mode === "voice" && !liveConnected)} type="submit"><Send aria-hidden="true" size={16} />{mode === "voice" ? "Send live" : "Send"}</button>
+        {mode === "chat" && controller.canStop ? <button className="inline-flex items-center gap-2 rounded-md border border-[#642BD8] px-4 py-2 text-sm font-semibold text-[#642BD8] disabled:opacity-50" disabled={controller.stopping} onClick={() => void controller.stopResponse()} type="button"><Square aria-hidden="true" size={16} />{controller.stopping ? "Stopping..." : "Stop response"}</button> : <button className="learnos-primary-button inline-flex items-center gap-2 px-4 py-2 text-sm disabled:opacity-50" disabled={disabled || !draft.trim() || (mode === "voice" && !liveConnected)} type="submit"><Send aria-hidden="true" size={16} />{mode === "voice" ? "Send live" : "Send"}</button>}
       </div>
     </form>
   </section>;

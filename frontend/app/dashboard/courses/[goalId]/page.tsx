@@ -143,9 +143,6 @@ export default function LearningWorkspacePage() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <Link className="text-sm font-semibold text-[#756B80] hover:text-[#29213D]" href="/dashboard">← Dashboard</Link>
           <div className="flex flex-wrap items-center gap-2">
-            <Link className="rounded-md border border-[#EEE5E0] bg-white px-3 py-2 text-sm font-semibold text-[#642BD8] transition hover:border-[#642BD8] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#642BD8]" href={`/dashboard/courses/${goal.id}/mock-test`}>
-              Mock Test
-            </Link>
             <button className="rounded-md border border-red-200 px-3 py-2 text-sm font-semibold text-red-700 transition hover:border-red-400 disabled:opacity-60" disabled={deleting} onClick={() => setConfirmDelete(true)} type="button">
               Delete course
             </button>
@@ -209,7 +206,8 @@ export default function LearningWorkspacePage() {
         </details>
         <nav aria-label="Course sections" className="mt-6 inline-flex max-w-full gap-1 rounded-xl border border-[#EEE5E0] bg-white p-1 shadow-[0_12px_32px_-30px_rgba(36,34,70,0.45)]">
           {(["learning", "notes"] as const).map((tab) => <button aria-current={activeTab === tab ? "page" : undefined} className={`min-h-10 rounded-lg px-4 py-2 text-sm font-semibold transition ${activeTab === tab ? "bg-[#642BD8] text-white shadow-sm" : "text-[#756B80] hover:bg-[#F2ECFF] hover:text-[#29213D]"}`} key={tab} onClick={() => setActiveTab(tab)} type="button">{tab === "learning" ? "Learning & Tutor" : "Notes"}</button>)}
-        </nav>
+                    <Link className="inline-flex min-h-10 items-center rounded-lg px-4 py-2 text-sm font-semibold text-[#756B80] transition hover:bg-[#F2ECFF] hover:text-[#29213D]" href={`/dashboard/courses/${goal.id}/mock-test`}>Mock Test</Link>
+                  </nav>
         {activeTab === "notes" ? <CourseNotesFolder courseId={goal.id} key={goal.id} user={user} /> : <CourseSyllabus
           courseId={goal.id}
           currentStudyHoursPerDay={goal.studyHoursPerDay ?? null}

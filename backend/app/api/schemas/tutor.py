@@ -82,8 +82,9 @@ class TutorAction(BaseModel):
 
 class TutorMessage(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    id: str | None = Field(default=None, max_length=150)
     role: Literal["user", "assistant"]
-    text: str = Field(default="", max_length=2000)
+    text: str = Field(default="", max_length=4000)
     reply: TutorReply | None = None
     channel: Literal["chat", "voice"] = "chat"
 
@@ -154,7 +155,20 @@ class TutorStateResponse(BaseModel):
     revision: int
     paused: bool
     busy: bool
+    pending_operation_id: str | None = None
     topic_status: dict[str, Literal["not_started", "in_progress", "completed"]]
     module_status: dict[str, Literal["not_started", "in_progress", "completed"]]
     conversation: TutorConversation
     can_confirm: bool
+
+
+class TutorCancelRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    courseId: str = Field(min_length=1, max_length=150, pattern=r"^[^/]+$")
+    operationId: str = Field(pattern=r"^[a-zA-Z0-9-]{16,64}$")
+
+
+class TutorHistoryResponse(BaseModel):
+    messages: list[TutorMessage] = Field(default_factory=list, max_length=50)
+    next_cursor: str | None = None

@@ -2,13 +2,14 @@ import json
 import unittest
 from datetime import datetime, timezone
 from unittest.mock import Mock, patch
+from types import SimpleNamespace
 
 from app.api.schemas.tutor import GeneratedTutorReply, TutorAction, TutorLiveTranscriptRequest, TutorReply
 from app.services import live_tutor
 from app.services.tutor import confirm_concept, ensure_topic_available, teach
 from app.services.ai_provider import ProviderResult
 from tests.test_syllabus import make_syllabus
-from tests.test_syllabus import FakeFirestore
+from tests.test_syllabus import FakeFirestore, FakeReference
 from fastapi.testclient import TestClient
 from app.api.dependencies import get_current_user
 from app.api.routes import tutor as tutor_route
@@ -21,6 +22,49 @@ def make_reply():
     return TutorReply(concepts=["Values", "Variables"], concept_title="Values",
                       explanation="A value is a piece of data.", example="42 is a number.",
                       check_question="Does a value make sense?")
+
+
+original_collection = FakeReference.collection
+
+
+class HistoryQuery:
+    def __init__(self, reference):
+        self.reference = reference
+        self.cursor = None
+        self.count = None
+
+    def document(self, document_id):
+        reference = FakeReference(self.reference.database, f"{self.reference.path}/tutorHistory/{document_id}")
+        snapshot = reference.get()
+        return SimpleNamespace(get=lambda: SimpleNamespace(
+            id=document_id, exists=snapshot.exists, to_dict=snapshot.to_dict,
+        ))
+
+    def order_by(self, field, direction=None):
+        return self
+
+    def start_after(self, cursor):
+        self.cursor = cursor.id
+        return self
+
+    def limit(self, count):
+        self.count = count
+        return self
+
+    def stream(self):
+        prefix = self.reference.path + "/tutorHistory/"
+        values = [(path.split("/")[-1], data) for path, data in self.reference.database.docs.items()
+                  if path.startswith(prefix)]
+        values.sort(key=lambda item: (item[1]["createdAt"], item[0]), reverse=True)
+        if self.cursor:
+            offset = next(index for index, (document_id, _) in enumerate(values) if document_id == self.cursor)
+            values = values[offset + 1:]
+        return iter([SimpleNamespace(id=document_id, to_dict=lambda data=data: data)
+                     for document_id, data in values[:self.count]])
+
+
+def history_collection(reference, name):
+    return HistoryQuery(reference) if name == "tutorHistory" else original_collection(reference, name)
 
 
 class TutorSequencingTests(unittest.TestCase):
@@ -231,6 +275,94 @@ class TutorEndpointTests(unittest.TestCase):
         self.assertEqual(response.json()["learner_name"], "Swati")
         self.assertEqual(response.json()["topic_status"]["module-1-topic-1"], "not_started")
         self.model.assert_not_called()
+
+    def test_stop_clears_only_matching_request_and_rejects_late_reply(self):
+        operation_id = "d" * 32
+        request = TutorAction(courseId="course-123", topicId="module-1-topic-1",
+                              revision=0, operationId=operation_id, action="message", message="Explain values")
+        context = tutor_route._context("course-123", {"uid": "authenticated-user"})
+        tutor_route._prepare(self.database.transaction(), context, request)
+        self.assertTrue(self.state().json()["busy"])
+        response = self.client.post("/api/tutor/cancel", json={"courseId": "course-123", "operationId": operation_id})
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()["busy"])
+        self.assertIsNone(response.json()["pending_operation_id"])
+        with self.assertRaises(tutor_route.HTTPException) as raised:
+            tutor_route._finish(self.database.transaction(), context, request, make_reply())
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(self.state().json()["conversation"]["messages"][0]["text"], "Explain values")
+        self.assertEqual(self.action("message", message="Continue").status_code, 200)
+
+    def test_stop_before_prepare_prevents_a_late_action_from_starting(self):
+        operation_id = "e" * 32
+        response = self.client.post("/api/tutor/cancel", json={"courseId": "course-123", "operationId": operation_id})
+        self.assertEqual(response.status_code, 200)
+        result = self.action("message", revision=0, operationId=operation_id, message="Delayed message")
+        self.assertEqual(result.status_code, 200)
+        self.model.assert_not_called()
+        self.assertFalse(result.json()["busy"])
+
+    def test_old_stop_does_not_cancel_another_pending_request(self):
+        context = tutor_route._context("course-123", {"uid": "authenticated-user"})
+        request = TutorAction(courseId="course-123", topicId="module-1-topic-1",
+                              revision=0, operationId="f" * 32, action="start")
+        tutor_route._prepare(self.database.transaction(), context, request)
+        result = self.client.post("/api/tutor/cancel", json={"courseId": "course-123", "operationId": "g" * 32})
+        self.assertEqual(result.status_code, 200)
+        self.assertTrue(result.json()["busy"])
+        self.assertEqual(result.json()["pending_operation_id"], request.operationId)
+
+    def test_history_pages_restore_more_than_twenty_messages_with_full_replies(self):
+        for index in range(30):
+            self.assertEqual(self.action("message", message=f"My answer {index}").status_code, 200)
+        self.assertEqual(len(self.state().json()["conversation"]["messages"]), 20)
+        with patch.object(FakeReference, "collection", history_collection):
+            params = {"courseId": "course-123", "topicId": "module-1-topic-1"}
+            first = self.client.get("/api/tutor/history", params=params)
+            self.assertEqual(first.status_code, 200, first.text)
+            self.assertEqual(len(first.json()["messages"]), 50)
+            self.assertIsNotNone(first.json()["next_cursor"])
+            second = self.client.get("/api/tutor/history", params={**params, "before": first.json()["next_cursor"]})
+            self.assertEqual(second.status_code, 200)
+            messages = second.json()["messages"] + first.json()["messages"]
+            self.assertEqual(len(messages), 60)
+            self.assertEqual(len({item["id"] for item in messages}), 60)
+            self.assertEqual(messages[0]["text"], "My answer 0")
+            self.assertEqual(messages[1]["reply"]["explanation"], make_reply().explanation)
+            self.assertIsNone(second.json()["next_cursor"])
+
+    def test_history_is_owner_scoped_and_excludes_previous_progress_epoch(self):
+        self.action("message", message="My private chat")
+        with patch.object(FakeReference, "collection", history_collection):
+            params = {"courseId": "course-123", "topicId": "module-1-topic-1"}
+            app.dependency_overrides[get_current_user] = lambda: {"uid": "another-user"}
+            self.assertEqual(self.client.get("/api/tutor/history", params=params).status_code, 404)
+            app.dependency_overrides[get_current_user] = lambda: {"uid": "authenticated-user"}
+            self.action("restart")
+            self.assertEqual(self.client.get("/api/tutor/history", params=params).json()["messages"], [])
+            self.assertTrue(any("/tutorHistory/" in path for path in self.database.docs))
+
+    def test_history_failure_is_explicit_and_can_be_retried(self):
+        with patch.object(FakeReference, "collection", history_collection), \
+                patch.object(HistoryQuery, "stream", side_effect=RuntimeError("Unavailable")):
+            result = self.client.get("/api/tutor/history", params={
+                "courseId": "course-123", "topicId": "module-1-topic-1",
+            })
+        self.assertEqual(result.status_code, 503)
+
+    def test_history_reads_legacy_text_and_rejects_missing_cursor(self):
+        self.database.docs[self.database.course_path + "/tutorHistory/legacy-assistant"] = {
+            "topicId": "module-1-topic-1", "role": "assistant", "text": "Earlier explanation",
+            "createdAt": datetime.now(timezone.utc),
+        }
+        params = {"courseId": "course-123", "topicId": "module-1-topic-1"}
+        with patch.object(FakeReference, "collection", history_collection):
+            result = self.client.get("/api/tutor/history", params=params)
+            missing = self.client.get("/api/tutor/history", params={**params, "before": "missing"})
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(result.json()["messages"][0]["text"], "Earlier explanation")
+        self.assertIsNone(result.json()["messages"][0]["reply"])
+        self.assertEqual(missing.status_code, 409)
 
     def test_restart_resets_progress_and_hides_prior_topic_conversation(self):
         self.action("start")
@@ -693,7 +825,10 @@ class TutorEndpointTests(unittest.TestCase):
         response = self.action("message", message="Explain variables")
         self.assertEqual(response.status_code, 503)
         messages = self.state().json()["conversation"]["messages"]
-        self.assertEqual(messages, [{"role": "user", "text": "Explain variables", "reply": None, "channel": "chat"}])
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0]["text"], "Explain variables")
+        self.assertEqual(messages[0]["role"], "user")
+        self.assertEqual(messages[0]["channel"], "chat")
         self.model.assert_called_once()
 
     def test_first_chat_message_can_initialize_tutor_without_extra_model_calls(self):
