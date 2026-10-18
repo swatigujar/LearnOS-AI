@@ -170,7 +170,7 @@ def _generate_prompt(course: dict, module, topic) -> str:
         "topic": {"title": topic.title, "description": topic.description},
     }
     return (
-        "Create exactly six concise, accurate multiple-choice questions for this saved course topic. "
+        "Create exactly ten concise, accurate multiple-choice questions for this saved course topic. "
         "Use the stated skill level and the topic scope. Each question must have four distinct options, exactly "
         "one defensibly correct answer index from 0 to 3, and a brief explanation. Avoid ambiguous or duplicate questions. "
         "Do not test content outside the selected topic. Return only the JSON object matching the supplied schema. "
@@ -198,9 +198,11 @@ def start_question_bank(course_id: str, topic_id: str, syllabus_version: int, at
             GeneratedMockQuestionSet.model_json_schema(),
             feature="mock_test",
             request_id=attempt_id,
-            max_output_tokens=1800,
+            max_output_tokens=3000,
         )
         bank = GeneratedMockQuestionSet.model_validate_json(provider_result.text)
+        if len(bank.questions) != 10:
+            raise ValueError("Newly generated question banks must contain ten questions.")
         stored_questions = [item.model_dump(mode="json") for item in bank.questions]
         saved = _finish_generation(database.transaction(), bank_ref, attempt_id, {
             "status": "ready",
@@ -239,7 +241,7 @@ def submit_question_bank(course_id: str, topic_id: str, syllabus_version: int, a
         bank = GeneratedMockQuestionSet.model_validate({"questions": (snapshot.to_dict() or {}).get("questions")})
     except ValidationError as exc:
         raise HTTPException(409, "The saved question bank needs review.") from exc
-    expected_ids = {f"q{index}" for index in range(1, 7)}
+    expected_ids = {f"q{index}" for index in range(1, len(bank.questions) + 1)}
     if set(answers) - expected_ids or any(index < 0 or index > 3 for index in answers.values()):
         raise HTTPException(422, "Submitted answers do not match this question bank.")
     reviewed = []

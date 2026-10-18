@@ -336,6 +336,7 @@ class PracticeEndpointsTests(unittest.TestCase):
             created = self.client.post("/api/practice/generate", json=payload)
             self.assertEqual(created.status_code, 200, created.text)
             self.assertEqual(created.json()["mode"], "scenario")
+            self.assertNotIn("┬", created.json()["contextTitle"])
             self.assertEqual(created.json()["questions"][0]["scenarioTitle"], "A mismatch while solving")
             self.assertNotIn("sampleAnswer", created.text)
             prompt = provider.generate_structured.call_args.args[0]
@@ -348,6 +349,8 @@ class PracticeEndpointsTests(unittest.TestCase):
         self.assertEqual(submitted.status_code, 200, submitted.text)
         self.assertEqual(submitted.json()["mode"], "scenario")
         saved_attempt = self.database.docs[f"users/learner-a/practiceAttempts/{submitted.json()['attemptId']}"]
+        self.assertEqual(saved_attempt["courseTitle"], "Applied Algebra")
+        self.assertEqual(saved_attempt["topicTitle"], "Core foundations · Linear equations")
         self.assertEqual(saved_attempt["total"], submitted.json()["total"])
         self.assertEqual(saved_attempt["scoreable"], submitted.json()["scoreable"])
         self.assertEqual(saved_attempt["unanswered"], submitted.json()["unanswered"])

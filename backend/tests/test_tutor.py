@@ -411,6 +411,28 @@ class TutorEndpointTests(unittest.TestCase):
         self.assertEqual(self.state().json()["topic_status"]["module-1-topic-1"], "in_progress")
         self.assertEqual(self.model.call_count, 0)
 
+    def test_chat_continues_from_saved_live_transcript_in_the_same_topic(self):
+        self.action("start")
+        voice = self.live_transcript([
+            {"role": "user", "text": "Can you explain this with a smaller example?"},
+            {"role": "assistant", "text": "A label can name a value before you use it."},
+        ])
+        self.assertEqual(voice.status_code, 200)
+
+        chat = self.action("message", message="The label example makes sense.")
+        self.assertEqual(chat.status_code, 200, chat.text)
+        messages = chat.json()["conversation"]["messages"]
+        self.assertTrue(any(item["channel"] == "voice" and item["role"] == "user" for item in messages))
+        self.assertTrue(any(item["channel"] == "chat" and item["text"] == "The label example makes sense." for item in messages))
+        reloaded = self.state().json()["conversation"]["messages"]
+        self.assertTrue(any(item["channel"] == "voice" and item["role"] == "assistant" for item in reloaded))
+        self.assertTrue(any(item["channel"] == "chat" and item["text"] == "The label example makes sense." for item in reloaded))
+        history = [value for path, value in self.database.docs.items()
+                   if path.startswith(self.database.course_path + "/tutorHistory/")]
+        self.assertEqual(sum(item["role"] == "user" for item in history), 2)
+        # The initial tutor greeting is already stored before the two voice/chat replies.
+        self.assertEqual(sum(item["role"] == "assistant" for item in history), 3)
+
     def test_live_usage_metadata_is_logged_once_with_transcript_retries(self):
         turns = [
             {"role": "user", "text": "Explain this concept."},
@@ -673,6 +695,16 @@ class TutorEndpointTests(unittest.TestCase):
         messages = self.state().json()["conversation"]["messages"]
         self.assertEqual(messages, [{"role": "user", "text": "Explain variables", "reply": None, "channel": "chat"}])
         self.model.assert_called_once()
+
+    def test_first_chat_message_can_initialize_tutor_without_extra_model_calls(self):
+        response = self.action("message", message="Can you explain the first topic?")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.model.call_count, 1)
+        messages = response.json()["conversation"]["messages"]
+        self.assertEqual(messages[0]["role"], "user")
+        self.assertEqual(messages[0]["text"], "Can you explain the first topic?")
+        self.assertEqual(messages[1]["role"], "assistant")
+        self.assertFalse(response.json()["busy"])
 
     def test_reply_schema_error_names_field_without_exposing_content(self):
         def invalid_reply(*args, **kwargs):

@@ -1,8 +1,20 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  color-scheme: light;
+  --background: #fff8f1;
+  --surface: #ffffff;
+  --foreground: #29213d;
+  --muted: #756b80;
+  --border: #eee5e0;
+  --brand: #642bd8;
+  --brand-strong: #5322b5;
+  --brand-soft: #f2ecff;
+  --accent: #a78bfa;
+  --accent-pink: #f8b4d0;
+  --accent-peach: #ffcbaa;
+  --accent-sage: #9bc7a5;
+  --plum: #4a285f;
 }
 
 @theme inline {
@@ -12,15 +24,125 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--background);
+  scroll-behavior: smooth;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+  font-feature-settings: "ss01" on;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: #eadcff;
+  color: #4a285f;
+}
+
+:focus-visible {
+  outline: 3px solid rgb(100 43 216 / 42%);
+  outline-offset: 3px;
+  border-radius: 0.5rem;
+}
+
+button,
+a,
+input,
+select,
+textarea {
+  -webkit-tap-highlight-color: transparent;
+}
+
+input,
+select,
+textarea {
+  color: var(--foreground);
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: #958a98;
+}
+
+.learnos-card {
+  border: 1px solid var(--border);
+  border-radius: 1.25rem;
+  background: var(--surface);
+  box-shadow: 0 14px 40px -32px rgb(74 40 95 / 24%);
+}
+
+.learnos-eyebrow {
+  color: var(--brand);
+  font-size: 0.7rem;
+  font-weight: 750;
+  letter-spacing: 0.14em;
+  line-height: 1.3;
+  text-transform: uppercase;
+}
+
+.learnos-primary-button {
+  border-radius: 0.8rem;
+  background: var(--brand);
+  color: white;
+  font-weight: 650;
+  transition: transform 160ms ease, background-color 160ms ease, box-shadow 160ms ease;
+}
+
+.learnos-primary-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  background: var(--brand-strong);
+  box-shadow: 0 12px 24px -16px rgb(83 34 181 / 70%);
+}
+
+.learnos-secondary-button {
+  border: 1px solid var(--border);
+  border-radius: 0.8rem;
+  background: var(--surface);
+  color: var(--plum);
+  font-weight: 650;
+  transition: border-color 160ms ease, background-color 160ms ease;
+}
+
+.learnos-secondary-button:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: #fcf9ff;
+}
+
+progress {
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  background: #efe8e5;
+  accent-color: var(--brand);
+}
+
+progress::-webkit-progress-bar {
+  border-radius: 999px;
+  background: #efe8e5;
+}
+
+progress::-webkit-progress-value {
+  border-radius: 999px;
+}
+
+progress::-moz-progress-bar {
+  border-radius: 999px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

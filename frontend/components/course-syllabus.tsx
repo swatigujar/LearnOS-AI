@@ -165,18 +165,18 @@ export function CourseSyllabus({
   }, [performTutor, selectedTopicId, tutor.busy, tutor.loading, tutor.state?.active_topic_id]);
 
   return (
-    <div className="mt-6 grid min-w-0 border-y border-[#e0e2d9] bg-white lg:grid-cols-[minmax(0,2.2fr)_minmax(0,2.8fr)]">
-    <section className="min-w-0 px-4 py-6 sm:px-6 lg:border-r lg:border-[#e0e2d9]" aria-labelledby="syllabus-heading">
+    <div className="mt-6 grid min-w-0 rounded-[1.5rem] border border-[#EEE5E0] bg-white shadow-[0_18px_50px_-40px_rgba(36,34,70,0.5)] lg:grid-cols-[minmax(0,2.2fr)_minmax(0,2.8fr)]">
+    <section className="min-w-0 px-4 py-6 sm:px-6 lg:border-r lg:border-[#EEE5E0]" aria-labelledby="syllabus-heading">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="flex items-center gap-2 text-base font-semibold" id="syllabus-heading"><BookOpen aria-hidden="true" size={18} />Learning path</h2>
         {!loading && status !== "ready" && (
-          <button className="rounded-md bg-[#1b302b] px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-60" disabled={generating} onClick={generate} type="button">
+          <button className="rounded-md bg-[#29213D] px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-60" disabled={generating} onClick={generate} type="button">
             {generating ? "Generating syllabus..." : status === "failed" ? "Retry generation" : "Generate syllabus"}
           </button>
         )}
       </div>
-      {loading && <p className="mt-3 text-sm text-[#68736d]">Loading syllabus...</p>}
-      {generating && <div className="mt-3 rounded-md border border-[#e0e2d9] bg-[#f6f5ef] px-3 py-2.5 text-sm text-[#586761]">
+      {loading && <p className="mt-3 text-sm text-[#756B80]">Loading syllabus...</p>}
+      {generating && <div className="mt-3 rounded-md border border-[#EEE5E0] bg-[#FFF8F1] px-3 py-2.5 text-sm text-[#756B80]">
         <p role="status">{status === "generating" ? "Syllabus generation is in progress. This can take a couple of minutes." : "Waiting for the syllabus request to finish."}</p>
         {elapsedSeconds !== null && <p aria-live="off" className="mt-1 text-xs">Elapsed: {formatElapsedTime(elapsedSeconds)}</p>}
       </div>}
@@ -184,39 +184,39 @@ export function CourseSyllabus({
       {error && <p className="mt-3 break-words text-sm text-red-800" role="alert">{error}</p>}
       {status === "ready" && syllabus && (
         <div className="mt-5 space-y-5 break-words text-sm leading-6">
-          {timelineDiffersFromSavedPlan && <p className="rounded-md border border-[#e0e2d9] bg-[#f6f5ef] px-3 py-2.5 text-sm text-[#586761]" role="status">Your timeline settings have changed. This saved syllabus may reflect the earlier plan; timeline edits do not revise it automatically.</p>}
+          {timelineDiffersFromSavedPlan && <p className="rounded-md border border-[#EEE5E0] bg-[#FFF8F1] px-3 py-2.5 text-sm text-[#756B80]" role="status">Your timeline settings have changed. This saved syllabus may reflect the earlier plan; timeline edits do not revise it automatically.</p>}
           <div className="space-y-3">
             <div>
-              <p className="text-xs font-semibold uppercase tracking-wide text-[#68736d]">Course overview</p>
-              <h3 className="mt-1 whitespace-pre-wrap text-xl font-semibold leading-7 text-[#1b302b]">{syllabus.overview}</h3>
+              <p className="text-xs font-semibold uppercase tracking-wide text-[#756B80]">Course overview</p>
+              <h3 className="mt-1 whitespace-pre-wrap text-xl font-semibold leading-7 text-[#29213D]">{syllabus.overview}</h3>
             </div>
-            <div className="rounded-md border border-[#e0e2d9] bg-[#f6f8f5] p-3 sm:p-4">
-              <h4 className="text-sm font-semibold text-[#1b302b]">Learning objective</h4>
-              <p className="mt-1.5 max-w-prose text-sm leading-6 text-[#586761]">{syllabus.objective}</p>
+            <div className="rounded-xl border border-[#e9e6f4] bg-[#f8f7fc] p-4 sm:p-5">
+              <h4 className="text-sm font-semibold text-[#29213D]">Learning objective</h4>
+              <p className="mt-1.5 max-w-prose text-sm leading-6 text-[#756B80]">{syllabus.objective}</p>
             </div>
-            <p className="mt-2 text-[#68736d]">{syllabus.duration_days} days · {syllabus.total_study_hours} study hours</p>
+            <p className="mt-2 text-[#756B80]">{syllabus.duration_days} days · {syllabus.total_study_hours} study hours</p>
           </div>
-          <div className="border-y border-[#e0e2d9] py-3">
-            <div className="flex flex-wrap justify-between gap-2 text-xs"><span className="font-semibold">Progress</span><span className="text-[#68736d]">{tutor.loading ? "Loading..." : `${completedTopics}/${lessons.length} topics confirmed`}</span></div>
-            <progress aria-label="Confirmed topic progress" className="mt-2 h-2 w-full accent-[#1b6657]" max={100} value={progress} />
-            <p className="mt-2 text-xs text-[#68736d]">{syllabus.modules.length} modules · {progress}% confirmed</p>
+            <div className="rounded-xl border border-[#EEE5E0] bg-[#FFFCF9] p-4">
+            <div className="flex flex-wrap justify-between gap-2 text-xs"><span className="font-semibold">Progress</span><span className="text-[#756B80]">{tutor.loading ? "Loading..." : `${completedTopics}/${lessons.length} topics confirmed`}</span></div>
+            <progress aria-label="Confirmed topic progress" className="mt-2 h-2 w-full accent-[#642BD8]" max={100} value={progress} />
+            <p className="mt-2 text-xs text-[#756B80]">{syllabus.modules.length} modules · {progress}% confirmed</p>
           </div>
-          {syllabus.prerequisites.length > 0 && <details><summary className="cursor-pointer font-semibold focus-visible:outline-2 focus-visible:outline-[#1b6657]">Prerequisites</summary><ul className="mt-2 list-disc space-y-1 pl-5">{syllabus.prerequisites.map((prerequisite, index) => <li key={index}>{prerequisite}</li>)}</ul></details>}
-          <ol className="divide-y divide-[#e0e2d9]">
+          {syllabus.prerequisites.length > 0 && <details><summary className="cursor-pointer font-semibold focus-visible:outline-2 focus-visible:outline-[#642BD8]">Prerequisites</summary><ul className="mt-2 list-disc space-y-1 pl-5">{syllabus.prerequisites.map((prerequisite, index) => <li key={index}>{prerequisite}</li>)}</ul></details>}
+          <ol className="divide-y divide-[#EEE5E0]">
             {syllabus.modules.map((module, index) => (
               <li className="py-3" key={module.module_id}>
                 <h3>
-                  <button aria-expanded={expandedModules[module.module_id] ?? index === 0} aria-controls={`module-${module.module_id}`} className="flex w-full items-start gap-2 py-2 text-left focus-visible:outline-2 focus-visible:outline-[#1b6657]" onClick={() => {
+                  <button aria-expanded={expandedModules[module.module_id] ?? index === 0} aria-controls={`module-${module.module_id}`} className="flex w-full items-start gap-2 py-2 text-left focus-visible:outline-2 focus-visible:outline-[#642BD8]" onClick={() => {
                     const opening = !(expandedModules[module.module_id] ?? index === 0);
                     setExpandedModules((current) => ({ ...current, [module.module_id]: opening }));
                   }} type="button">
                     {(expandedModules[module.module_id] ?? index === 0) ? <ChevronDown aria-hidden="true" className="mt-1 shrink-0" size={16} /> : <ChevronRight aria-hidden="true" className="mt-1 shrink-0" size={16} />}
-                    <span className="min-w-0"><span className="font-semibold">{index + 1}. {module.title}</span>{tutor.state?.module_status[module.module_id] === "completed" && <CheckCircle2 aria-label="Module completed" className="ml-2 inline text-green-700" size={16} />}<span className="mt-0.5 block text-xs text-[#68736d]">{module.estimated_hours} hours <span aria-hidden="true">·</span> {module.topics.length} topics</span></span>
+                    <span className="min-w-0"><span className="font-semibold">{index + 1}. {module.title}</span>{tutor.state?.module_status[module.module_id] === "completed" && <CheckCircle2 aria-label="Module completed" className="ml-2 inline text-green-700" size={16} />}<span className="mt-0.5 block text-xs text-[#756B80]">{module.estimated_hours} hours <span aria-hidden="true">·</span> {module.topics.length} topics</span></span>
                   </button>
                 </h3>
                 <div hidden={!(expandedModules[module.module_id] ?? index === 0)} id={`module-${module.module_id}`}>
-                  <p className="mb-3 pl-6 text-[#586761]">{module.description}</p>
-                  <ol className="space-y-2 border-l border-[#d9ddd5] pl-3">
+                  <p className="mb-3 pl-6 text-[#756B80]">{module.description}</p>
+                  <ol className="space-y-2 border-l border-[#EEE5E0] pl-3">
                     {module.topics.map((topic) => {
                       const selected = selectedLesson?.topic_id === topic.topic_id;
                       const topicStatus = tutor.state?.topic_status[topic.topic_id];
@@ -225,22 +225,22 @@ export function CourseSyllabus({
                       const statusLabel = completed ? "Completed" : selected ? "Current lesson" : inProgress ? "In progress" : "Not started";
                       return (
                       <li key={topic.topic_id}>
-                        <div className={`flex min-w-0 items-start rounded-md border border-l-4 transition-colors ${selected ? "border-[#1b6657] border-l-[#1b6657] bg-[#eaf4ef] text-[#1b6657]" : completed ? "border-[#dce9df] border-l-[#5a8a67] bg-[#f4f8f4]" : inProgress ? "border-[#eadfc8] border-l-[#c48b32] bg-[#fbf8f1]" : "border-transparent border-l-[#d9ddd5] hover:bg-[#f6f8f5]"}`}>
-                          <button aria-pressed={selected} className="min-w-0 flex-1 rounded-md p-3 text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1b6657] disabled:cursor-not-allowed disabled:opacity-50" disabled={tutor.loading || tutor.busy} onClick={() => void selectTopic(topic.topic_id)} title="Open lesson" type="button">
+                        <div className={`flex min-w-0 items-start rounded-md border border-l-4 transition-colors ${selected ? "border-[#642BD8] border-l-[#642BD8] bg-[#F2ECFF] text-[#642BD8]" : completed ? "border-[#dce9df] border-l-[#5a8a67] bg-[#f4f8f4]" : inProgress ? "border-[#eadfc8] border-l-[#c48b32] bg-[#fbf8f1]" : "border-transparent border-l-[#EEE5E0] hover:bg-[#F2ECFF]"}`}>
+                          <button aria-pressed={selected} className="min-w-0 flex-1 rounded-md p-3 text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#642BD8] disabled:cursor-not-allowed disabled:opacity-50" disabled={tutor.loading || tutor.busy} onClick={() => void selectTopic(topic.topic_id)} title="Open lesson" type="button">
                             <span className="flex min-w-0 items-start gap-2">
                               {completed && <CheckCircle2 aria-hidden="true" className="mt-0.5 shrink-0 text-green-700" size={16} />}
                               <span className="min-w-0 flex-1 break-words font-medium">{topic.title}</span>
-                              <span className={`shrink-0 rounded-full px-2 py-0.5 text-[0.65rem] font-semibold leading-4 ${completed ? "bg-[#dce9df] text-[#31553d]" : selected || inProgress ? "bg-white/80 text-[#1b6657]" : "bg-[#f0f1ec] text-[#68736d]"}`}>{statusLabel}</span>
+                              <span className={`shrink-0 rounded-full px-2 py-0.5 text-[0.65rem] font-semibold leading-4 ${completed ? "bg-[#dce9df] text-[#31553d]" : selected || inProgress ? "bg-white/80 text-[#642BD8]" : "bg-[#f0f1ec] text-[#756B80]"}`}>{statusLabel}</span>
                             </span>
                           </button>
-                          <button aria-label={`${expandedTopics[topic.topic_id] ? "Collapse" : "Expand"} ${topic.title}`} aria-controls={`topic-${topic.topic_id}`} aria-expanded={expandedTopics[topic.topic_id] ?? false} className="m-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1b6657]" onClick={() => setExpandedTopics((current) => ({ ...current, [topic.topic_id]: !current[topic.topic_id] }))} title="Show lesson details" type="button">
+                          <button aria-label={`${expandedTopics[topic.topic_id] ? "Collapse" : "Expand"} ${topic.title}`} aria-controls={`topic-${topic.topic_id}`} aria-expanded={expandedTopics[topic.topic_id] ?? false} className="m-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#642BD8]" onClick={() => setExpandedTopics((current) => ({ ...current, [topic.topic_id]: !current[topic.topic_id] }))} title="Show lesson details" type="button">
                             {expandedTopics[topic.topic_id] ? <ChevronDown aria-hidden="true" size={16} /> : <ChevronRight aria-hidden="true" size={16} />}
                           </button>
                         </div>
                         <div className="px-3 pb-3 pt-2" hidden={!expandedTopics[topic.topic_id]} id={`topic-${topic.topic_id}`}>
-                          <p className="text-xs font-medium text-[#68736d]">{topic.estimated_minutes} minutes</p>
-                          <p className="mt-2 max-w-prose whitespace-pre-wrap text-sm leading-6 text-[#586761]">{topic.description}</p>
-                          {syllabus.resources.length > 0 && <details className="mt-3"><summary className="cursor-pointer text-xs font-semibold focus-visible:outline-2 focus-visible:outline-[#1b6657]">Course resources</summary><ul className="mt-2 space-y-2">{syllabus.resources.map((resource) => <li key={resource.url}><a className="inline-flex items-start gap-1 text-xs underline underline-offset-4" href={resource.url} rel="noopener noreferrer" target="_blank">{resource.title}<ExternalLink aria-hidden="true" className="mt-1 shrink-0" size={12} /><span className="sr-only"> (opens in a new tab)</span></a><p className="text-xs text-[#68736d]">{resource.source_type}</p></li>)}</ul></details>}
+                          <p className="text-xs font-medium text-[#756B80]">{topic.estimated_minutes} minutes</p>
+                          <p className="mt-2 max-w-prose whitespace-pre-wrap text-sm leading-6 text-[#756B80]">{topic.description}</p>
+                          {syllabus.resources.length > 0 && <details className="mt-3"><summary className="cursor-pointer text-xs font-semibold focus-visible:outline-2 focus-visible:outline-[#642BD8]">Course resources</summary><ul className="mt-2 space-y-2">{syllabus.resources.map((resource) => <li key={resource.url}><a className="inline-flex items-start gap-1 text-xs underline underline-offset-4" href={resource.url} rel="noopener noreferrer" target="_blank">{resource.title}<ExternalLink aria-hidden="true" className="mt-1 shrink-0" size={12} /><span className="sr-only"> (opens in a new tab)</span></a><p className="text-xs text-[#756B80]">{resource.source_type}</p></li>)}</ul></details>}
                         </div>
                       </li>
                       );
@@ -250,10 +250,10 @@ export function CourseSyllabus({
               </li>
             ))}
           </ol>
-          <details className="border-t border-[#e0e2d9] pt-4">
-            <summary className="cursor-pointer font-semibold focus-visible:outline-2 focus-visible:outline-[#1b6657]">All course resources</summary>
+          <details className="border-t border-[#EEE5E0] pt-4">
+            <summary className="cursor-pointer font-semibold focus-visible:outline-2 focus-visible:outline-[#642BD8]">All course resources</summary>
             <ul className="mt-3 space-y-3">
-              {syllabus.resources.map((resource) => <li key={resource.url}><a className="font-medium underline underline-offset-4" href={resource.url} rel="noopener noreferrer" target="_blank">{resource.title}</a><p className="text-xs text-[#68736d]">{resource.source_type}</p><p className="text-[#586761]">{resource.description}</p></li>)}
+              {syllabus.resources.map((resource) => <li key={resource.url}><a className="font-medium underline underline-offset-4" href={resource.url} rel="noopener noreferrer" target="_blank">{resource.title}</a><p className="text-xs text-[#756B80]">{resource.source_type}</p><p className="text-[#756B80]">{resource.description}</p></li>)}
             </ul>
           </details>
         </div>

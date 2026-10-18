@@ -569,7 +569,7 @@ def generate_practice_questions(request: PracticeGenerateRequest, user):
     if request.mode in ("concept", "scenario"):
         values = _active_topic_context(database, uid, request.courseId, request.topicId, request.syllabusVersion)
         course_ref, course_title, topic_title, module_title, _, course, goal, syllabus, module, topic = values
-        context_title = f"{course_title} ┬╖ {module_title} ┬╖ {topic_title}"
+        context_title = f"{course_title} · {module_title} · {topic_title}"
         objective = topic.description
         source_context = {
             "course": course_title,
@@ -604,7 +604,7 @@ def generate_practice_questions(request: PracticeGenerateRequest, user):
         objective = f"Interview practice for the learner-selected skill/category: {request.category}."
         if interview_course_context:
             objective += " Use this additional saved syllabus context where relevant."
-            context_title = f"{request.category} ┬╖ {course_title} ┬╖ {module_title} ┬╖ {topic_title}"
+            context_title = f"{request.category} · {course_title} · {module_title} · {topic_title}"
         source_context = {
             "selectedSkillOrCategory": request.category,
             "targetRole": request.targetRole or "",
@@ -731,8 +731,11 @@ def submit_generated_practice(request: PracticeGeneratedSubmitRequest, user):
     data = snapshot.to_dict() or {}
     if data.get("status") != "ready":
         raise HTTPException(409, "This question set is not ready to submit.")
+    saved_topic_context = None
     if data.get("mode") in ("concept", "scenario"):
-        _active_topic_context(database, uid, data.get("courseId"), data.get("topicId"), data.get("syllabusVersion"))
+        saved_topic_context = _active_topic_context(
+            database, uid, data.get("courseId"), data.get("topicId"), data.get("syllabusVersion"),
+        )
     try:
         question_set = GeneratedPracticeQuestionSet.model_validate({"questions": data.get("questions", [])})
     except ValidationError as exc:
@@ -785,10 +788,15 @@ def submit_generated_practice(request: PracticeGeneratedSubmitRequest, user):
         unanswered=len(question_set.questions) - answered,
         percentage=round(correct / scoreable * 100) if scoreable else None, questions=reviewed,
     )
+    saved_course_title = saved_topic_context[1] if saved_topic_context else data.get("contextTitle", "Practice")
+    saved_topic_title = (
+        f"{saved_topic_context[3]} · {saved_topic_context[2]}" if saved_topic_context
+        else data.get("contextTitle", "Practice")
+    )
     completed = {
         "mode": data["mode"], "courseId": data.get("courseId", ""),
-        "courseTitle": data.get("contextTitle", "Practice"), "topicId": data.get("topicId") or data.get("category", ""),
-        "topicTitle": data.get("contextTitle", "Practice"), "category": data.get("category"),
+        "courseTitle": saved_course_title, "topicId": data.get("topicId") or data.get("category", ""),
+        "topicTitle": saved_topic_title, "category": data.get("category"),
         "difficulty": data["difficulty"], "questionSetId": request.setId,
         "answers": request.answers, "review": result.model_dump(),
         "total": result.total, "scoreable": result.scoreable, "correct": result.correct,

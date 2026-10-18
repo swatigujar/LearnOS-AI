@@ -59,11 +59,12 @@ export function friendlyTutorError(status: number, detail = "") {
 export function friendlyTutorFailure(failure: unknown) {
   const detail = failure instanceof Error ? failure.message : "";
   const normalized = detail.toLowerCase();
+  const errorName = failure instanceof Error ? failure.name.toLowerCase() : "";
   if (failure instanceof Error && failure.name === "TimeoutError" || /timed out|deadline/.test(normalized)) {
     return "Live voice couldn't connect in time. Check microphone access or your network, then try again or continue in chat.";
   }
   if (/\b429\b|quota|rate.?limit|request limit/.test(normalized)) return friendlyTutorError(429);
-  if (/notallowed|microphone permission|microphone access/.test(normalized)) {
+  if (/notallowed|securityerror/.test(errorName) || /notallowed|microphone permission|microphone access/.test(normalized)) {
     return "Microphone access is off. Allow it in your browser settings, or continue in chat.";
   }
   if (detail.startsWith("Live voice needs a supported browser")) return detail;

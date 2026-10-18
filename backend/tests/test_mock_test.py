@@ -21,16 +21,20 @@ def make_question_set():
              "options": [f"Correct concept {index}", f"Distractor A {index}", f"Distractor B {index}", f"Distractor C {index}"],
              "answer_index": 0,
              "explanation": f"Concept {index} follows the saved topic description."}
-            for index in range(1, 7)
+            for index in range(1, 11)
         ]
     }
 
 
 class MockTestSchemaTests(unittest.TestCase):
-    def test_requires_six_questions_four_distinct_options_and_one_answer_index(self):
+    def test_accepts_legacy_six_and_new_ten_question_banks(self):
         valid = GeneratedMockQuestionSet.model_validate(make_question_set())
-        self.assertEqual(len(valid.questions), 6)
+        self.assertEqual(len(valid.questions), 10)
         self.assertTrue(all(len(question.options) == 4 and 0 <= question.answer_index <= 3 for question in valid.questions))
+
+        legacy = make_question_set()
+        legacy["questions"] = legacy["questions"][:6]
+        self.assertEqual(len(GeneratedMockQuestionSet.model_validate(legacy).questions), 6)
 
         duplicate = make_question_set()
         duplicate["questions"][0]["options"][1] = duplicate["questions"][0]["options"][0]
@@ -38,9 +42,19 @@ class MockTestSchemaTests(unittest.TestCase):
             GeneratedMockQuestionSet.model_validate(duplicate)
 
         short = make_question_set()
-        short["questions"].pop()
+        short["questions"] = short["questions"][:5]
         with self.assertRaises(ValidationError):
             GeneratedMockQuestionSet.model_validate(short)
+
+        too_long = make_question_set()
+        too_long["questions"].append(dict(too_long["questions"][0], prompt="An eleventh distinct question prompt?"))
+        with self.assertRaises(ValidationError):
+            GeneratedMockQuestionSet.model_validate(too_long)
+
+        unsupported_count = make_question_set()
+        unsupported_count["questions"] = unsupported_count["questions"][:7]
+        with self.assertRaises(ValidationError):
+            GeneratedMockQuestionSet.model_validate(unsupported_count)
 
         invalid_answer = make_question_set()
         invalid_answer["questions"][0]["answer_index"] = 4
@@ -86,18 +100,19 @@ class MockTestEndpointTests(unittest.TestCase):
         response = self.start("module-1-topic-2")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "ready")
-        self.assertEqual(len(response.json()["questions"]), 6)
+        self.assertEqual(len(response.json()["questions"]), 10)
         self.assertNotIn("answer_index", response.text)
         self.provider.generate_structured.assert_called_once()
         kwargs = self.provider.generate_structured.call_args.kwargs
         self.assertEqual(kwargs["feature"], "mock_test")
-        self.assertEqual(kwargs["max_output_tokens"], 1800)
+        self.assertEqual(kwargs["max_output_tokens"], 3000)
+        self.assertIn("exactly ten", self.provider.generate_structured.call_args.args[0])
         self.assertTrue(kwargs["request_id"])
         self.assertIn("A newly saved topic", self.provider.generate_structured.call_args.args[0])
         self.assertIn("Applied Algebra", self.provider.generate_structured.call_args.args[0])
         saved = self.database.docs[self.bank_path("module-1-topic-2")]
         self.assertEqual(saved["status"], "ready")
-        self.assertEqual(len(saved["questions"]), 6)
+        self.assertEqual(len(saved["questions"]), 10)
         self.assertEqual(self.start("module-1-topic-2").json()["status"], "ready")
         self.provider.generate_structured.assert_called_once()
 
@@ -134,11 +149,26 @@ class MockTestEndpointTests(unittest.TestCase):
         self.assertNotIn("answer_index", reused.text)
         submitted = self.client.post("/api/mock-test/submit", json={
             "courseId": "course-123", "topicId": "module-1-topic-1", "syllabusVersion": 1,
-            "answers": {f"q{index}": 0 for index in range(1, 7)},
+            "answers": {f"q{index}": 0 for index in range(1, 11)},
         })
         self.assertEqual(submitted.status_code, 200)
-        self.assertEqual((submitted.json()["total"], submitted.json()["correct"], submitted.json()["percentage"]), (6, 6, 100))
+        self.assertEqual((submitted.json()["total"], submitted.json()["correct"], submitted.json()["percentage"]), (10, 10, 100))
         self.assertEqual(submitted.json()["questions"][0]["explanation"], "Concept 1 follows the saved topic description.")
+        self.provider.generate_structured.assert_not_called()
+
+    def test_legacy_six_question_bank_submits_with_dynamic_result_counts(self):
+        questions = make_question_set()["questions"][:6]
+        self.database.docs[self.bank_path()] = {
+            "status": "ready", "syllabus_version": 1, "topic_id": "module-1-topic-1",
+            "questions": questions,
+        }
+        submitted = self.client.post("/api/mock-test/submit", json={
+            "courseId": "course-123", "topicId": "module-1-topic-1", "syllabusVersion": 1,
+            "answers": {"q1": 0, "q2": 1},
+        })
+        self.assertEqual(submitted.status_code, 200)
+        result = submitted.json()
+        self.assertEqual((result["total"], result["correct"], result["incorrect"], result["unanswered"]), (6, 1, 1, 4))
         self.provider.generate_structured.assert_not_called()
 
     def test_usage_budget_rejection_is_persisted_and_does_not_call_gemini(self):
@@ -177,6 +207,15 @@ class MockTestEndpointTests(unittest.TestCase):
         self.assertNotEqual(self.database.docs[self.bank_path()]["status"], "ready")
         self.provider.generate_structured.assert_called_once()
 
+    def test_generated_bank_with_legacy_count_is_not_saved_as_new_ready_bank(self):
+        self.provider.generate_structured.return_value = Mock(text=json.dumps({
+            "questions": make_question_set()["questions"][:6],
+        }))
+        response = self.start()
+        self.assertEqual(response.json()["status"], "failed")
+        self.assertEqual(response.json()["questions"], [])
+        self.assertNotEqual(self.database.docs[self.bank_path()]["status"], "ready")
+
     def test_stale_attempt_cannot_overwrite_a_new_explicit_attempt(self):
         bank_ref = self.database.document(self.bank_path())
         self.database.docs[self.bank_path()] = {
@@ -202,9 +241,11 @@ class MockTestEndpointTests(unittest.TestCase):
         self.client.get("/api/mock-test/bank", params={
             "courseId": "course-123", "topicId": "module-1-topic-1", "syllabusVersion": 1,
         })
-        self.client.post("/api/mock-test/submit", json={
+        partial = self.client.post("/api/mock-test/submit", json={
             "courseId": "course-123", "topicId": "module-1-topic-1", "syllabusVersion": 1, "answers": {"q1": 0},
         })
+        self.assertEqual(partial.status_code, 200)
+        self.assertEqual((partial.json()["total"], partial.json()["correct"], partial.json()["incorrect"], partial.json()["unanswered"]), (10, 1, 0, 9))
         self.provider.generate_structured.assert_not_called()
 
     def test_unrelated_course_cannot_read_or_generate_a_bank(self):

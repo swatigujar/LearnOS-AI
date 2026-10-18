@@ -130,7 +130,7 @@ export function Select({
         aria-haspopup="listbox"
         aria-label={label}
         aria-controls={`${id}-listbox`}
-        className="flex min-h-11 w-full min-w-0 items-center justify-between gap-3 rounded-md border border-[#d9ddd5] bg-white px-3 py-2 text-left text-sm font-medium text-[#19352d] outline-none hover:border-[#aebdb2] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#176b59] disabled:cursor-not-allowed disabled:bg-[#f6f8f5] disabled:text-[#89938c]"
+        className="flex min-h-11 w-full min-w-0 items-center justify-between gap-3 rounded-md border border-[#EEE5E0] bg-white px-3 py-2 text-left text-sm font-medium text-[#4A285F] outline-none hover:border-[#aebdb2] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#642BD8] disabled:cursor-not-allowed disabled:bg-[#F2ECFF] disabled:text-[#858398]"
         disabled={disabled}
         onClick={() => { setActiveIndex(selectedIndex); setOpen((current) => !current); }}
         onKeyDown={onKeyDown}
@@ -143,7 +143,7 @@ export function Select({
       </button>
       {open && options.length > 0 && menuStyle && typeof document !== "undefined" && createPortal(
         <div
-          className="z-[1000] overflow-y-auto overscroll-contain rounded-md border border-[#d9ddd5] bg-white p-1 shadow-lg"
+          className="z-[1000] overflow-y-auto overscroll-contain rounded-md border border-[#EEE5E0] bg-white p-1 shadow-lg"
           id={`${id}-listbox`}
           ref={listRef}
           role="listbox"
@@ -154,7 +154,7 @@ export function Select({
           {options.map((option, index) => (
             <div
               aria-selected={option.value === value}
-              className={`cursor-pointer rounded px-3 py-2 text-sm leading-5 text-[#34423c] focus:outline-none ${index === activeIndex ? "bg-[#eaf4ef] text-[#176b59]" : "hover:bg-[#f6f8f5]"} ${option.value === value ? "font-semibold" : ""}`}
+              className={`cursor-pointer rounded px-3 py-2 text-sm leading-5 text-[#424158] focus:outline-none ${index === activeIndex ? "bg-[#F2ECFF] text-[#642BD8]" : "hover:bg-[#F2ECFF]"} ${option.value === value ? "font-semibold" : ""}`}
               data-option-index={index}
               id={`${id}-option-${index}`}
               key={`${option.value}-${index}`}

@@ -39,6 +39,8 @@ type SubmittedBankResult = {
   questions: { questionId: string; prompt: string; options: string[]; selectedIndex: number | null; correctIndex: number; explanation: string; correct: boolean }[];
 };
 
+const SAVED_TOPIC_QUESTION_BANK_LABEL = "Saved topic question bank";
+
 const pythonFundamentalsDemo: DemoQuestion[] = [
   {
     id: "python-variable-assignment",
@@ -449,7 +451,7 @@ export default function MockTestPage() {
       setTestStarted(true);
       return;
     }
-    if (selectedBank?.status === "ready" && selectedBank.questions.length === 6) {
+    if (selectedBank?.status === "ready" && selectedBank.questions.length > 0) {
       setAnswers({});
       setActiveQuestionIndex(0);
       setSubmitted(false);
@@ -476,7 +478,7 @@ export default function MockTestPage() {
         questions: (result.questions ?? []).map((question) => ({ id: question.questionId, prompt: question.prompt, options: question.options })),
       };
       setGeneratedBanks((current) => ({ ...current, [requestBankKey]: bank }));
-      if (activeBankKey.current === requestBankKey && bank.status === "ready" && bank.questions.length === 6) {
+      if (activeBankKey.current === requestBankKey && bank.status === "ready" && bank.questions.length > 0) {
         setAnswers({});
         setActiveQuestionIndex(0);
         setSubmitted(false);
@@ -518,41 +520,41 @@ export default function MockTestPage() {
   }
 
   if (authLoading || !user || loading) {
-    return <main className="flex min-h-screen items-center justify-center bg-[#f6f5ef] text-sm text-[#68736d]">Loading your saved course...</main>;
+    return <main className="flex min-h-screen items-center justify-center bg-[#FFF8F1] text-sm text-[#756B80]">Loading your saved course...</main>;
   }
 
   return (
-    <main className="min-h-screen bg-[#f6f5ef] px-5 py-8 text-[#1b302b] sm:px-8 sm:py-10">
+    <main className="min-h-screen bg-[#FFF8F1] px-5 py-8 text-[#29213D] sm:px-8 sm:py-10">
       <div className="mx-auto max-w-4xl">
-        <Link className="text-sm font-semibold text-[#586761] hover:text-[#1b302b] focus-visible:outline-2 focus-visible:outline-[#1b6657]" href={`/dashboard/courses/${params.goalId}`}>
+        <Link className="text-sm font-semibold text-[#756B80] hover:text-[#29213D] focus-visible:outline-2 focus-visible:outline-[#642BD8]" href={`/dashboard/courses/${params.goalId}`}>
           ← Back to course
         </Link>
-        <header className="mt-6 border-b border-[#e0e2d9] pb-5">
-          <p className="text-xs font-bold uppercase tracking-wide text-[#d16445]">Practice</p>
+        <header className="mt-6 border-b border-[#EEE5E0] pb-5">
+          <p className="text-xs font-bold uppercase tracking-wide text-[#642BD8]">Practice</p>
           <h1 className="mt-2 text-2xl font-semibold">Mock Test</h1>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-[#68736d]">Choose a saved topic, answer each question, and submit to see your results.</p>
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-[#756B80]">Choose a saved topic, answer each question, and submit to see your results.</p>
         </header>
 
         {error ? (
           <section className="mt-6 rounded-lg border border-red-200 bg-white p-5" role="alert">
             <h2 className="font-semibold">Course unavailable</h2>
-            <p className="mt-2 text-sm text-[#68736d]">{error}</p>
+            <p className="mt-2 text-sm text-[#756B80]">{error}</p>
           </section>
         ) : (
           <>
-            <section aria-labelledby="test-setup-heading" className="mt-6 rounded-lg border border-[#e0e2d9] bg-white p-5 sm:p-6">
+            <section aria-labelledby="test-setup-heading" className="mt-6 rounded-lg border border-[#EEE5E0] bg-white p-5 sm:p-6">
               <h2 className="text-lg font-semibold" id="test-setup-heading">Test setup</h2>
               <dl className="mt-4 grid gap-4 sm:grid-cols-2">
                 <div>
-                  <dt className="text-xs font-semibold uppercase tracking-wide text-[#89938c]">Course</dt>
+                  <dt className="text-xs font-semibold uppercase tracking-wide text-[#858398]">Course</dt>
                   <dd className="mt-1 break-words text-sm">{courseName}</dd>
                 </div>
                 <div>
-                  <dt className="text-xs font-semibold uppercase tracking-wide text-[#89938c]">Question count</dt>
+                  <dt className="text-xs font-semibold uppercase tracking-wide text-[#858398]">Question count</dt>
                   <dd className="mt-1 text-sm">
                     {questions.length ? `${questions.length} ${staticQuestions.length ? "fixed demo" : "saved"} questions available` :
                       selectedBankStatus === "checking" ? "Checking saved question bank…" :
-                      selectedBankStatus === "missing" ? "6 questions can be prepared when you start" :
+                      selectedBankStatus === "missing" ? "A question bank will be prepared when you start" :
                       selectedBankStatus === "pending" ? "Question bank preparation is pending" :
                       selectedBankStatus === "budget_blocked" ? "Unavailable: AI usage budget limit reached" :
                       selectedBankStatus === "failed" ? "Unavailable: question bank needs an explicit retry" :
@@ -572,21 +574,21 @@ export default function MockTestPage() {
                     options={topics.map((topic) => ({ value: topic.id, label: `${topic.moduleTitle}: ${topic.title}` }))}
                     value={selectedTopic?.id ?? ""}
                   />
-                  {selectedTopic && <p className="mt-2 text-sm leading-6 text-[#68736d]">{selectedTopic.description}</p>}
+                  {selectedTopic && <p className="mt-2 text-sm leading-6 text-[#756B80]">{selectedTopic.description}</p>}
                 </div>
               ) : (
-                <p className="mt-5 rounded-md border border-[#e0e2d9] bg-[#f6f5ef] px-3 py-2.5 text-sm text-[#586761]">
+                <p className="mt-5 rounded-md border border-[#EEE5E0] bg-[#FFF8F1] px-3 py-2.5 text-sm text-[#756B80]">
                   {syllabusStatus === "ready" ? "No lessons are available in the saved syllabus." : "A saved syllabus is not available for this course yet."}
                 </p>
               )}
 
-              <div className="mt-5 border-t border-[#edf0e9] pt-4">
+              <div className="mt-5 border-t border-[#EEE5E0] pt-4">
                 <h3 className="text-sm font-semibold">Instructions</h3>
-                <p className="mt-2 text-sm leading-6 text-[#586761]">One answer per question. Submit to see your score and explanations.</p>
+                <p className="mt-2 text-sm leading-6 text-[#756B80]">One answer per question. Submit to see your score and explanations.</p>
                 {!testStarted && (
                   <button
-                    className="mt-5 rounded-md bg-[#1b302b] px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[#28473f] disabled:cursor-not-allowed disabled:opacity-50"
-                    disabled={!staticQuestions.length && !(selectedBank?.status === "ready" && selectedBank.questions.length === 6) && !["missing", "failed", "budget_blocked", "uncertain"].includes(selectedBankStatus)}
+                    className="mt-5 rounded-md bg-[#29213D] px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[#5322B5] disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={!staticQuestions.length && !(selectedBank?.status === "ready" && selectedBank.questions.length > 0) && !["missing", "failed", "budget_blocked", "uncertain"].includes(selectedBankStatus)}
                     onClick={() => void startTest()}
                     type="button"
                   >
@@ -596,38 +598,38 @@ export default function MockTestPage() {
                 {actionError && <p className="mt-3 text-sm text-red-700" role="alert">{actionError}</p>}
                 {!staticQuestions.length && selectedBank?.status === "budget_blocked" && <p className="mt-3 text-sm text-[#8a4b20]" role="status">Question generation is blocked by the configured AI usage budget. This topic cannot be started.</p>}
                 {!staticQuestions.length && selectedBank?.status === "failed" && <p className="mt-3 text-sm text-[#8a4b20]" role="status">This topic’s one-time question-bank attempt did not produce a valid saved set. It will not be retried automatically.</p>}
-                {!staticQuestions.length && selectedBank?.status === "pending" && <p className="mt-3 text-sm text-[#68736d]" role="status">A preparation request is already recorded. Reload later to check whether its saved bank is ready.</p>}
+                {!staticQuestions.length && selectedBank?.status === "pending" && <p className="mt-3 text-sm text-[#756B80]" role="status">A preparation request is already recorded. Reload later to check whether its saved bank is ready.</p>}
                 {!staticQuestions.length && selectedBank?.status === "uncertain" && <p className="mt-3 text-sm text-[#8a4b20]" role="status">The previous provider request timed out or had an uncertain outcome. No automatic retry was made. An explicit retry may result in another provider charge.</p>}
                 {!staticQuestions.length && selectedBank?.status === "unavailable" && <p className="mt-3 text-sm text-[#8a4b20]" role="status">The saved question-bank status could not be checked. Reload the page to check again; no questions were generated by this check.</p>}
-                {!staticQuestions.length && selectedBank?.status === "unavailable" && <button className="mt-3 rounded-md border border-[#d9ddd5] px-3 py-2 text-sm font-semibold transition hover:bg-[#f6f8f5] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1b6657]" disabled={selectedBankStatus === "checking"} onClick={() => void checkSavedBank()} type="button">Check saved bank</button>}
+                {!staticQuestions.length && selectedBank?.status === "unavailable" && <button className="mt-3 rounded-md border border-[#EEE5E0] px-3 py-2 text-sm font-semibold transition hover:bg-[#F2ECFF] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#642BD8]" disabled={selectedBankStatus === "checking"} onClick={() => void checkSavedBank()} type="button">Check saved bank</button>}
               </div>
             </section>
 
             {testStarted && !submitted && currentQuestion && (
-              <section aria-labelledby="demo-test-heading" className="mt-5 rounded-lg border border-[#e0e2d9] bg-white p-5 sm:p-6">
+              <section aria-labelledby="demo-test-heading" className="mt-5 rounded-lg border border-[#EEE5E0] bg-white p-5 sm:p-6">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <h2 className="font-semibold" id="demo-test-heading">{isGeneratedBank ? "Saved topic question bank" : "Fixed demo questions — not personalized"}</h2>
-                  <p className="text-sm text-[#68736d]">Question {activeQuestionIndex + 1} of {questions.length} · {answeredCount} answered</p>
+                  <h2 className="font-semibold" id="demo-test-heading">{isGeneratedBank ? SAVED_TOPIC_QUESTION_BANK_LABEL : "Fixed demo questions — not personalized"}</h2>
+                  <p className="text-sm text-[#756B80]">Question {activeQuestionIndex + 1} of {questions.length} · {answeredCount} answered</p>
                 </div>
                 <fieldset className="mt-5">
                   <legend className="text-base font-semibold leading-6">{currentQuestion.prompt}</legend>
                   <div className="mt-4 space-y-2">
                     {currentQuestion.options.map((option, optionIndex) => (
-                      <label className={`flex cursor-pointer items-start gap-3 rounded-md border p-3 text-sm leading-6 transition-colors ${answers[currentQuestion.id] === optionIndex ? "border-[#1b6657] bg-[#eaf4ef]" : "border-[#e0e2d9] hover:bg-[#f6f8f5]"}`} key={option}>
-                        <input checked={answers[currentQuestion.id] === optionIndex} className="mt-1 accent-[#1b6657]" name={`answer-${currentQuestion.id}`} onChange={() => setAnswers((current) => ({ ...current, [currentQuestion.id]: optionIndex }))} type="radio" />
+                      <label className={`flex cursor-pointer items-start gap-3 rounded-md border p-3 text-sm leading-6 transition-colors ${answers[currentQuestion.id] === optionIndex ? "border-[#642BD8] bg-[#F2ECFF]" : "border-[#EEE5E0] hover:bg-[#F2ECFF]"}`} key={option}>
+                        <input checked={answers[currentQuestion.id] === optionIndex} className="mt-1 accent-[#642BD8]" name={`answer-${currentQuestion.id}`} onChange={() => setAnswers((current) => ({ ...current, [currentQuestion.id]: optionIndex }))} type="radio" />
                         <span>{option}</span>
                       </label>
                     ))}
                   </div>
                 </fieldset>
-                <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-[#edf0e9] pt-4">
-                  <button className="rounded-md border border-[#d9ddd5] px-4 py-2.5 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-50" disabled={activeQuestionIndex === 0} onClick={() => setActiveQuestionIndex((index) => index - 1)} type="button">Previous</button>
+                <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-[#EEE5E0] pt-4">
+                  <button className="rounded-md border border-[#EEE5E0] px-4 py-2.5 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-50" disabled={activeQuestionIndex === 0} onClick={() => setActiveQuestionIndex((index) => index - 1)} type="button">Previous</button>
                   {activeQuestionIndex < questions.length - 1 ? (
-                    <button className="rounded-md bg-[#1b302b] px-4 py-2.5 text-sm font-semibold text-white" onClick={() => setActiveQuestionIndex((index) => index + 1)} type="button">Next</button>
+                    <button className="rounded-md bg-[#29213D] px-4 py-2.5 text-sm font-semibold text-white" onClick={() => setActiveQuestionIndex((index) => index + 1)} type="button">Next</button>
                   ) : (
                     <div className="text-right">
-                      <button className="rounded-md bg-[#1b302b] px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[#28473f] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1b6657] disabled:cursor-wait disabled:opacity-60" disabled={submitting} onClick={() => void submitTest()} type="button">{submitting ? "Scoring…" : "Submit Test"}</button>
-                      {answeredCount !== questions.length && <p className="mt-2 text-xs text-[#68736d]" role="status">You can submit now; unanswered questions will be shown in your results.</p>}
+                      <button className="rounded-md bg-[#29213D] px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[#5322B5] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#642BD8] disabled:cursor-wait disabled:opacity-60" disabled={submitting} onClick={() => void submitTest()} type="button">{submitting ? "Scoring…" : "Submit Test"}</button>
+                      {answeredCount !== questions.length && <p className="mt-2 text-xs text-[#756B80]" role="status">You can submit now; unanswered questions will be shown in your results.</p>}
                     </div>
                   )}
                 </div>
@@ -636,40 +638,40 @@ export default function MockTestPage() {
 
             {submitted && (
               <section aria-labelledby="test-results-heading" className="mt-5 rounded-lg border border-[#dce9df] bg-white p-5 sm:p-6">
-                <p className="text-xs font-bold uppercase tracking-wide text-[#1b6657]">{isGeneratedBank ? "Topic mock test results" : "Demo test results"}</p>
+                <p className="text-xs font-bold uppercase tracking-wide text-[#642BD8]">{isGeneratedBank ? SAVED_TOPIC_QUESTION_BANK_LABEL : "Demo test results"}</p>
                 <h2 className="mt-1 text-xl font-semibold" id="test-results-heading">Score: {scorePercentage}%</h2>
                 <dl className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-5">
-                  <div><dt className="text-xs font-semibold uppercase tracking-wide text-[#89938c]">Total</dt><dd className="mt-1 text-lg font-semibold">{resultTotal}</dd></div>
-                  <div><dt className="text-xs font-semibold uppercase tracking-wide text-[#89938c]">Correct</dt><dd className="mt-1 text-lg font-semibold text-[#31553d]">{correctCount}</dd></div>
-                  <div><dt className="text-xs font-semibold uppercase tracking-wide text-[#89938c]">Incorrect</dt><dd className="mt-1 text-lg font-semibold text-[#9b3b2b]">{incorrectCount}</dd></div>
-                  <div><dt className="text-xs font-semibold uppercase tracking-wide text-[#89938c]">Unanswered</dt><dd className="mt-1 text-lg font-semibold">{unansweredCount}</dd></div>
-                  <div><dt className="text-xs font-semibold uppercase tracking-wide text-[#89938c]">Percentage</dt><dd className="mt-1 text-lg font-semibold">{scorePercentage}%</dd></div>
+                  <div><dt className="text-xs font-semibold uppercase tracking-wide text-[#858398]">Total</dt><dd className="mt-1 text-lg font-semibold">{resultTotal}</dd></div>
+                  <div><dt className="text-xs font-semibold uppercase tracking-wide text-[#858398]">Correct</dt><dd className="mt-1 text-lg font-semibold text-[#31553d]">{correctCount}</dd></div>
+                  <div><dt className="text-xs font-semibold uppercase tracking-wide text-[#858398]">Incorrect</dt><dd className="mt-1 text-lg font-semibold text-[#9b3b2b]">{incorrectCount}</dd></div>
+                  <div><dt className="text-xs font-semibold uppercase tracking-wide text-[#858398]">Unanswered</dt><dd className="mt-1 text-lg font-semibold">{unansweredCount}</dd></div>
+                  <div><dt className="text-xs font-semibold uppercase tracking-wide text-[#858398]">Percentage</dt><dd className="mt-1 text-lg font-semibold">{scorePercentage}%</dd></div>
                 </dl>
-                <ol className="mt-5 space-y-4 border-t border-[#edf0e9] pt-4">
+                <ol className="mt-5 space-y-4 border-t border-[#EEE5E0] pt-4">
                   {questions.map((question, index) => {
                     const review = submittedBankResult?.questions[index];
                     const selectedIndex = review ? review.selectedIndex : answers[question.id] ?? null;
                     const correctIndex = review?.correctIndex ?? question.answer;
                     return (
-                      <li className="rounded-md bg-[#f6f8f5] p-4" key={question.id}>
+                      <li className="rounded-md bg-[#F2ECFF] p-4" key={question.id}>
                         <h3 className="text-sm font-semibold">{index + 1}. {question.prompt}</h3>
-                        <p className="mt-2 text-sm text-[#586761]">Your answer: {selectedIndex === null ? "Not answered" : question.options[selectedIndex]}</p>
+                        <p className="mt-2 text-sm text-[#756B80]">Your answer: {selectedIndex === null ? "Not answered" : question.options[selectedIndex]}</p>
                         <p className="mt-1 text-sm font-medium text-[#31553d]">Correct answer: {correctIndex === undefined ? "Unavailable" : question.options[correctIndex]}</p>
-                        <p className="mt-2 text-sm leading-6 text-[#586761]">{review?.explanation ?? question.explanation}</p>
+                        <p className="mt-2 text-sm leading-6 text-[#756B80]">{review?.explanation ?? question.explanation}</p>
                       </li>
                     );
                   })}
                 </ol>
-                <button className="mt-5 rounded-md border border-[#d9ddd5] px-4 py-2.5 text-sm font-semibold transition hover:bg-[#f6f8f5] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1b6657]" onClick={resetTest} type="button">Retake Test</button>
+                <button className="mt-5 rounded-md border border-[#EEE5E0] px-4 py-2.5 text-sm font-semibold transition hover:bg-[#F2ECFF] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#642BD8]" onClick={resetTest} type="button">Retake Test</button>
               </section>
             )}
 
             {!questions.length && (
-              <section aria-labelledby="question-bank-heading" className="mt-5 rounded-lg border border-[#e0e2d9] bg-white p-5 sm:p-6">
+              <section aria-labelledby="question-bank-heading" className="mt-5 rounded-lg border border-[#EEE5E0] bg-white p-5 sm:p-6">
                 <h2 className="font-semibold" id="question-bank-heading">{selectedBankStatus === "missing" ? "No saved question bank yet" : selectedBankStatus === "pending" ? "Question bank preparation pending" : selectedBankStatus === "checking" ? "Checking saved question bank" : "Question bank unavailable"}</h2>
-                <p className="mt-2 text-sm leading-6 text-[#586761]">
+                <p className="mt-2 text-sm leading-6 text-[#756B80]">
                   {selectedBankStatus === "missing"
-                    ? "Starting prepares and saves six questions once. Opening this page or changing topics does not generate questions."
+                    ? "Starting prepares and saves this question bank once. Opening this page or changing topics does not generate questions."
                     : selectedBankStatus === "pending"
                       ? "A preparation claim is already saved. Reload later to check whether the question bank is ready; this request will not be repeated automatically."
                       : selectedBankStatus === "budget_blocked"
@@ -685,9 +687,9 @@ export default function MockTestPage() {
               </section>
             )}
 
-            <section aria-labelledby="coming-soon-heading" className="mt-5 rounded-lg border border-[#e0e2d9] bg-white p-5 sm:p-6">
+            <section aria-labelledby="coming-soon-heading" className="mt-5 rounded-lg border border-[#EEE5E0] bg-white p-5 sm:p-6">
               <h2 className="font-semibold" id="coming-soon-heading">Coming Soon</h2>
-              <ul className="mt-3 flex flex-wrap gap-2 text-sm text-[#68736d]">
+              <ul className="mt-3 flex flex-wrap gap-2 text-sm text-[#756B80]">
                 <li className="rounded-full bg-[#f0f1ec] px-3 py-1.5">Timed mock tests · Coming Soon</li>
                 <li className="rounded-full bg-[#f0f1ec] px-3 py-1.5">Performance analytics · Coming Soon</li>
                 <li className="rounded-full bg-[#f0f1ec] px-3 py-1.5">Adaptive difficulty · Coming Soon</li>

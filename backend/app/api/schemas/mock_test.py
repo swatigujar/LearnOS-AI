@@ -13,7 +13,7 @@ class MockTestRequest(BaseModel):
 
 
 class MockTestSubmitRequest(MockTestRequest):
-    answers: dict[str, StrictInt] = Field(default_factory=dict, max_length=6)
+    answers: dict[str, StrictInt] = Field(default_factory=dict, max_length=10)
 
 
 class MockTestStartRequest(MockTestRequest):
@@ -40,13 +40,16 @@ class GeneratedMockQuestion(BaseModel):
 class GeneratedMockQuestionSet(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    questions: list[GeneratedMockQuestion] = Field(min_length=6, max_length=6)
+    # Keep six-question banks readable for existing saved data; new banks contain ten.
+    questions: list[GeneratedMockQuestion] = Field(min_length=6, max_length=10)
 
     @model_validator(mode="after")
     def validate_unique_questions(self):
+        if len(self.questions) not in (6, 10):
+            raise ValueError("A saved question bank must contain six legacy or ten current questions.")
         prompts = [" ".join(unicodedata.normalize("NFKC", q.prompt).casefold().split()) for q in self.questions]
-        if len(set(prompts)) != 6:
-            raise ValueError("The question set must contain six distinct questions.")
+        if len(set(prompts)) != len(self.questions):
+            raise ValueError("The question set must contain distinct questions.")
         return self
 
 

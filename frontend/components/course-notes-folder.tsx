@@ -32,7 +32,7 @@ function GenerationTimer({ note }: { note: NoteRecord }) {
     return () => window.clearInterval(timer);
   }, []);
 
-  return <p aria-live="off" className="mt-1 text-xs text-[#68736d]">Elapsed: {Math.max(0, Math.floor((now - startedAt) / 1000))} seconds</p>;
+  return <p aria-live="off" className="mt-1 text-xs text-[#756B80]">Elapsed: {Math.max(0, Math.floor((now - startedAt) / 1000))} seconds</p>;
 }
 
 const noteImageCache = new Map<string, string>();
@@ -97,10 +97,10 @@ function NoteImage({ user, courseId, topicId, title, syllabusVersion }: {
     return () => { active = false; };
   }, [cacheKey, courseId, syllabusVersion, topicId, user]);
 
-  if (failed) return <p className="mt-3 text-sm text-[#68736d]" role="status">The handwritten image is temporarily unavailable.</p>;
-  if (!url) return <p className="mt-3 text-sm text-[#68736d]" role="status">Loading handwritten page…</p>;
+  if (failed) return <p className="mt-3 text-sm text-[#756B80]" role="status">The handwritten image is temporarily unavailable.</p>;
+  if (!url) return <p className="mt-3 text-sm text-[#756B80]" role="status">Loading handwritten page…</p>;
   const filename = `${title.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "-").trim() || "Lesson notes"}.jpg`;
-  return <div><a className="mt-3 inline-flex items-center gap-2 rounded-md bg-[#1b6657] px-3 py-2 text-sm font-semibold text-white" download={filename} href={url}><Download aria-hidden="true" size={16} />Download notes</a><Image alt={`Handwritten notes for ${title}`} className="mt-4 h-auto max-h-[760px] w-full rounded-md border border-[#e0e2d9] object-contain" height={2048} onError={() => { clearNoteImageCache(user.uid, courseId, topicId); setUrl(""); setFailed(true); }} src={url} unoptimized width={1536} /></div>;
+  return <div><a className="mt-3 inline-flex items-center gap-2 rounded-xl bg-[#642BD8] px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#5322B5]" download={filename} href={url}><Download aria-hidden="true" size={16} />Download notes</a><Image alt={`Handwritten notes for ${title}`} className="mt-4 h-auto max-h-[760px] w-full rounded-2xl border border-[#EEE5E0] bg-[#FFFCF9] object-contain p-2" height={2048} onError={() => { clearNoteImageCache(user.uid, courseId, topicId); setUrl(""); setFailed(true); }} src={url} unoptimized width={1536} /></div>;
 }
 
 export function CourseNotesFolder({ user, courseId }: { user: User; courseId: string }) {
@@ -183,37 +183,37 @@ export function CourseNotesFolder({ user, courseId }: { user: User; courseId: st
     }
   }
 
-  if (loading) return <p className="mt-7 rounded-lg border border-[#e0e2d9] bg-[#fafaf7] p-6 text-sm text-[#68736d]" role="status">Loading topics and notes…</p>;
+  if (loading) return <p className="mt-7 rounded-lg border border-[#EEE5E0] bg-[#fafaf7] p-6 text-sm text-[#756B80]" role="status">Loading topics and notes…</p>;
   if (error) return <p className="mt-7 rounded-lg border border-red-200 bg-red-50 p-6 text-sm text-red-800" role="alert">{error}</p>;
 
   return (
     <div className="mt-7 space-y-7">
       {modules.map((module) => (
         <section aria-labelledby={`notes-${module.module_id}`} className="space-y-3" key={module.module_id}>
-          <h3 className="border-b border-[#e0e2d9] pb-2 text-lg font-semibold text-[#1b302b]" id={`notes-${module.module_id}`}>{module.title}</h3>
+          <h3 className="border-b border-[#EEE5E0] pb-2 text-lg font-semibold text-[#29213D]" id={`notes-${module.module_id}`}>{module.title}</h3>
           {module.topics.map((topic) => {
             const note = notes[topic.topic_id];
             const isCompleted = completed[topic.topic_id] === true;
             return (
-              <article className="rounded-lg border border-[#e0e2d9] bg-white p-4 sm:p-5" key={topic.topic_id}>
+              <article className="rounded-2xl border border-[#EEE5E0] bg-white p-4 shadow-[0_12px_32px_-30px_rgba(36,34,70,0.42)] sm:p-5" key={topic.topic_id}>
                 <div className="flex items-start gap-3">
-                  {isCompleted ? <CheckCircle2 aria-hidden="true" className="mt-0.5 shrink-0 text-green-700" size={18} /> : <FileText aria-hidden="true" className="mt-0.5 shrink-0 text-[#89938c]" size={18} />}
+                  {isCompleted ? <CheckCircle2 aria-hidden="true" className="mt-0.5 shrink-0 text-green-700" size={18} /> : <FileText aria-hidden="true" className="mt-0.5 shrink-0 text-[#858398]" size={18} />}
                   <div className="min-w-0 flex-1">
-                    <h4 className="break-words font-semibold text-[#1b302b]">{topic.title}</h4>
+                    <h4 className="break-words font-semibold text-[#29213D]">{topic.title}</h4>
                     {note?.status === "completed" ? (
                       <>
                         <NoteImage key={`${user.uid}-${courseId}-${topic.topic_id}-${note.syllabusVersion ?? 0}`} user={user} courseId={courseId} topicId={topic.topic_id} title={topic.title} syllabusVersion={note.syllabusVersion ?? 0} />
-                        {!!note.sources?.length && <div className="mt-4 text-xs text-[#68736d]"><p className="font-semibold">Sources</p><ul className="mt-1 list-disc space-y-1 pl-5">{note.sources.map((source) => <li key={source.url}><a className="underline decoration-[#aab3aa] underline-offset-2 hover:text-[#1b6657]" href={source.url} rel="noreferrer" target="_blank">{source.title}</a></li>)}</ul></div>}
+                        {!!note.sources?.length && <div className="mt-4 text-xs text-[#756B80]"><p className="font-semibold">Sources</p><ul className="mt-1 list-disc space-y-1 pl-5">{note.sources.map((source) => <li key={source.url}><a className="underline decoration-[#aab3aa] underline-offset-2 hover:text-[#642BD8]" href={source.url} rel="noreferrer" target="_blank">{source.title}</a></li>)}</ul></div>}
                       </>
                     ) : note?.status === "queued" || note?.status === "generating" ? (
-                      <div className="mt-2"><p className="text-sm text-[#68736d]" role="status">{note.status === "queued" ? "Handwritten notes are queued…" : "Generating handwritten notes…"}</p><GenerationTimer key={note.status} note={note} /><button className="mt-2 inline-flex items-center gap-2 rounded-md border border-[#d9ddd5] px-3 py-2 text-xs font-semibold text-[#586761] disabled:opacity-50" disabled={!!retrying[topic.topic_id]} onClick={() => void retry(topic.topic_id)} type="button"><RefreshCw aria-hidden="true" size={14} />{retrying[topic.topic_id] ? "Checking…" : "Check generation"}</button></div>
+                      <div className="mt-2"><p className="text-sm text-[#756B80]" role="status">{note.status === "queued" ? "Handwritten notes are queued…" : "Generating handwritten notes…"}</p><GenerationTimer key={note.status} note={note} /><button className="mt-2 inline-flex items-center gap-2 rounded-md border border-[#EEE5E0] px-3 py-2 text-xs font-semibold text-[#756B80] disabled:opacity-50" disabled={!!retrying[topic.topic_id]} onClick={() => void retry(topic.topic_id)} type="button"><RefreshCw aria-hidden="true" size={14} />{retrying[topic.topic_id] ? "Checking…" : "Check generation"}</button></div>
                     ) : note?.status === "deleting" ? (
-                      <p className="mt-2 text-sm text-[#68736d]" role="status">Removing notes with this course…</p>
+                      <p className="mt-2 text-sm text-[#756B80]" role="status">Removing notes with this course…</p>
                     ) : note?.status === "failed" ? (
-                      <div className="mt-2"><p className="text-sm text-[#68736d]">{note.lastError ?? "Notes could not be generated."}</p><button className="mt-3 inline-flex items-center gap-2 rounded-md border border-[#1b6657] px-3 py-2 text-sm font-semibold text-[#1b6657] disabled:opacity-50" disabled={!!retrying[topic.topic_id]} onClick={() => void retry(topic.topic_id)} type="button"><RefreshCw aria-hidden="true" size={15} />{retrying[topic.topic_id] ? "Retrying…" : "Retry notes"}</button></div>
+                      <div className="mt-2"><p className="text-sm text-[#756B80]">{note.lastError ?? "Notes could not be generated."}</p><button className="mt-3 inline-flex items-center gap-2 rounded-md border border-[#642BD8] px-3 py-2 text-sm font-semibold text-[#642BD8] disabled:opacity-50" disabled={!!retrying[topic.topic_id]} onClick={() => void retry(topic.topic_id)} type="button"><RefreshCw aria-hidden="true" size={15} />{retrying[topic.topic_id] ? "Retrying…" : "Retry notes"}</button></div>
                     ) : isCompleted ? (
-                      <div className="mt-2"><p className="text-sm text-[#68736d]">No notes generated yet.</p><button className="mt-3 inline-flex items-center gap-2 rounded-md bg-[#1b6657] px-3 py-2 text-sm font-semibold text-white disabled:opacity-50" disabled={!!retrying[topic.topic_id]} onClick={() => void retry(topic.topic_id)} type="button"><RefreshCw aria-hidden="true" size={15} />{retrying[topic.topic_id] ? "Starting…" : "Generate notes"}</button></div>
-                    ) : <p className="mt-2 text-sm text-[#68736d]">Notes will be generated when you complete this subtopic.</p>}
+                      <div className="mt-2"><p className="text-sm text-[#756B80]">No notes generated yet.</p><button className="mt-3 inline-flex items-center gap-2 rounded-md bg-[#642BD8] px-3 py-2 text-sm font-semibold text-white disabled:opacity-50" disabled={!!retrying[topic.topic_id]} onClick={() => void retry(topic.topic_id)} type="button"><RefreshCw aria-hidden="true" size={15} />{retrying[topic.topic_id] ? "Starting…" : "Generate notes"}</button></div>
+                    ) : <p className="mt-2 text-sm text-[#756B80]">Notes will be generated when you complete this subtopic.</p>}
                     {retryErrors[topic.topic_id] && <p className="mt-2 text-sm text-red-800" role="alert">{retryErrors[topic.topic_id]}</p>}
                   </div>
                 </div>
@@ -222,7 +222,7 @@ export function CourseNotesFolder({ user, courseId }: { user: User; courseId: st
           })}
         </section>
       ))}
-      {modules.length === 0 && <p className="rounded-lg border border-dashed border-[#d9ddd5] p-6 text-sm text-[#68736d]">No notes generated yet. Course topics and handwritten pages will appear here after the syllabus is ready and you complete a subtopic.</p>}
+      {modules.length === 0 && <p className="rounded-lg border border-dashed border-[#EEE5E0] p-6 text-sm text-[#756B80]">No notes generated yet. Course topics and handwritten pages will appear here after the syllabus is ready and you complete a subtopic.</p>}
     </div>
   );
 }
